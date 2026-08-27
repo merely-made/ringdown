@@ -29,6 +29,7 @@ struct Args {
     config_out: Option<String>,
     diagnose: bool,
     trace: bool,
+    bank: Option<i64>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -38,6 +39,7 @@ fn parse_args() -> Result<Args, String> {
         config_out: None,
         diagnose: false,
         trace: false,
+        bank: None,
     };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -50,6 +52,10 @@ fn parse_args() -> Result<Args, String> {
             "--write-len" => {
                 let v = argv.next().ok_or("--write-len needs a value")?;
                 args.write_len = Some(v.parse().map_err(|_| "--write-len isn't a number")?);
+            }
+            "--bank" => {
+                let v = argv.next().ok_or("--bank needs a number")?;
+                args.bank = Some(v.parse().map_err(|_| "--bank isn't a number")?);
             }
             "--diagnose" => args.diagnose = true,
             "--trace" => args.trace = true,
@@ -72,6 +78,8 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
   --scan-secs <n>    how long to scan (default 10)
   --write-len <n>    override the assumed write length (default 514)
   --config <path>    also run ReadConfig and write the result here
+  --bank <n>         also run ReadBank for one bank (a smaller read than
+                     ReadConfig, so it may fit where the whole config does not)
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -173,6 +181,29 @@ async fn run(args: Args) -> Result<(), TransportError> {
     println!("      firmware ESP    {}", status.version_esp);
     println!("      firmware STM    {}", status.version_stm);
     println!("\n      cpu id and STM version are what a firmware assessment would start from.");
+
+    if let Some(n) = args.bank {
+        println!(
+            "
+[extra] ReadBank {n} — a smaller read than the whole config..."
+        );
+        match guitar
+            .call(
+                antinode::rpc::Method::ReadBank,
+                antinode::rpc::params::bank(n),
+            )
+            .await
+        {
+            Ok(v) => {
+                println!("        ANSWERED:");
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&v).unwrap_or_else(|_| String::from("?"))
+                );
+            }
+            Err(e) => println!("        {e}"),
+        }
+    }
 
     if let Some(path) = args.config_out {
         println!("\n[extra] ReadConfig — the live effect catalog...");

@@ -4,9 +4,9 @@
 **Status:** in progress. Phase 0 landed 2026-08-27. **Phase 1 is most of the
 way:** the GATT surface (H1), the version banner (H2), and a full `GetStatus`
 round-trip (H4) are hardware-verified against instrument H2-CC340, with the
-device's reply pinned as a test fixture. Remaining before the phase closes:
-`ReadConfig` for the live effect catalog, how an over-MTU reply arrives (F11),
-and whether bonding is required. Nothing has been written to the guitar's
+device's reply pinned as a test fixture. Remaining before the phase closes: `ReadConfig`,
+which needs **LLT2** — a second transport, compressed and binary-framed, that
+this firmware selects and antinode does not yet implement (H6/F14). Nothing has been written to the guitar's
 configuration; every exchange so far has been a read.
 
 ---
@@ -199,10 +199,36 @@ Done-conditions:
   connects and switches banks, proving the sibling-consumer topology end to
   end.
 
+### Phase 2.5 — LLT2 (inserted 2026-08-27, discovered by hardware)
+
+**Feature target:** antinode speaks the transport this firmware actually uses,
+so that any message larger than a single write works in both directions.
+
+Not optional and not deferrable: every large read (`ReadConfig`, `ReadBank`)
+and every large write (`SetConfig`, `AddEffect` with a full effect) needs it.
+Self-contained, though — a codec with a known dictionary and no I/O, which
+makes it sans-io work testable against fixtures before it meets the guitar.
+
+Done-conditions:
+
+- `JsonCompressor` encode and decode round-trip in Rust, dictionary-exact.
+- A payload captured from the device decodes to valid JSON.
+- LLT2 binary framing (transfer type, object id, little-endian index) chunks and
+  reassembles; CRC32 matches on file transfers.
+- `ReadConfig` returns the live configuration from the instrument.
+
 ### Phase 3 — Beyond the app
 
 **Feature target:** the things the phone app cannot do — the reason to own the
 protocol rather than rent it.
+
+**The dictionary named the targets** (F15). Nineteen methods exist in firmware
+that the vendor's app never calls, and the strongest of them is
+`SetSpeakerBiquads` — raw biquad coefficients on the speaker path, i.e.
+arbitrary filter design on the instrument, reachable without any firmware work.
+`GetLevels`, `StartTuner`/`StopTuner`, and `StartAnalysis`/`GetAnalysis` are the
+other immediate ones, and the tuner in particular already has a UI waiting for
+it in woodshed.
 
 Candidate scope (Decision D3 sets the actual target):
 
@@ -575,6 +601,84 @@ connection.
 bonding is ever required, and the effect catalog itself — all reachable now via
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
+
+**H6 — `ReadConfig` is silent, and it identified a second transport we had not
+implemented at all.** `GetStatus` round-trips, but `ReadConfig` — same request
+size, much larger reply — returns nothing whatever in 10s. The MTU explanation
+is dead: the `GetStatus` reply was **171 bytes** and arrived intact, so the
+negotiated MTU is at least 174.
+
+The cause is in `ConnectableDeviceCommunicator` line ~5898, which chooses a
+transport by firmware version:
+
+```java
+(stmVersion.isAtLeast(1,2,2) && espVersion.isAtLeast(1,2,2))
+    ? new LLT2Manager(...)   // binary framing + compression
+    : new LLTManager(...)    // the one antinode implements
+```
+
+The reference instrument is STM 1.2.3 / ESP 1.3.0, so **it is an LLT2 device**.
+Antinode implements LLT1 only. Small uncompressed requests still work because
+short messages bypass framing on both paths and the device answers in kind — so
+`GetStatus` succeeding was never evidence that the transport was complete.
+
+**F14 — LLT2, the transport for anything large.** Differences from LLT1, which
+are not incremental:
+
+- Operates on **bytes**, not strings (`request(byte[] …)`).
+- Payloads are **compressed** by `JsonCompressor`, a bespoke codec — not gzip.
+- Frames carry a **binary header**: `data[0]` is a transfer type, `data[2]` the
+  object id, `data[3..4]` a little-endian index.
+- `sendFile` tracks a **CRC32** across the transfer.
+- Receive path is `JsonCompressor.decode(data)`, which returns null unless the
+  first nibble is `BT_START` — so the format is self-describing, and an
+  uncompressed message is simply ignored by an LLT2 reader.
+
+`JsonCompressor` is a nibble-level JSON codec: 4-bit block-type tags for
+structural tokens (`{`, `}`, `,`, `:`, `[`, `]`, `true`, `false`, `null`),
+8-bit indices into a 153-entry keyword dictionary for known strings, short-string
+and BCD encodings for the rest. Implementing it is real work, but it is
+self-contained and fully described by `JsonCompressor.decode`/`encode` and
+`NibbleList`.
+
+**F15 — The keyword dictionary leaks the device's whole vocabulary, including
+capabilities the phone app never exposes.** The dictionary must contain every
+string the firmware exchanges, so it is effectively a manifest.
+
+**Nineteen methods absent from `RPCRequestType`** — i.e. present in the firmware
+but never called by the vendor's own app:
+
+`ActivateSpkFilter`, `BTcheck`, `BypassEffect`, `DumpFile`, `GetAnalysis`,
+`GetLastRecordingName`, `GetLevels`, `LaunchCalibration`, `PrintBank`,
+`PullFbk`, `ReadMetronome`, `SetGainPreamp`, `SetPhaseInv`,
+`SetSpeakerBiquads`, `StartAnalysis`, `StartRendering`, `StartTuner`,
+`StopRendering`, `StopTuner`
+
+Several are exactly the "past what the phone app exposes" the project exists
+for. `SetSpeakerBiquads` is the standout: raw biquad coefficients on the speaker
+path is arbitrary filter design on the instrument's output, without touching
+firmware at all. `GetLevels` pairs with the dictionary's `input_level` /
+`output_level` keys for live metering; `StartTuner` / `StopTuner` expose the
+tuner woodshed already has a UI for; `StartAnalysis` / `GetAnalysis` reach the
+calibration engine; `SetGainPreamp` and `SetPhaseInv` are preamp controls the
+app's Input Levels screen only partly surfaces.
+
+**The effect catalog**, previously assumed to be reachable only via Firebase or
+`ReadConfig`: `Boost`, `Chorus`, `Delay`, `DelaySync`, `Disto`, `Distortion`,
+`Echo`, `Equalizer`, `Highpass`, `Lowpass`, `Notch`, `Octaver`, `Phaser`,
+`Pitch`, `Reverb`, `Tremolo`, `Volume`, `LFO`, `None`.
+
+**Parameter names**: `Decay`, `DelayTime`, `DryWet`, `Feedback`, `Frequency`,
+`Gain`, `GainBand1`–`GainBand6`, `Q`, `Shift`, `Slider`, `Sync`, `Pitch`, `amp`.
+
+**Config keys** not previously seen: `favorite_banks`, `fbk_onoff`, `fbk_params`,
+`gain_master`, `gain_preamp`, `calibration_on`, `input_level`, `output_level`,
+`nbreso`, `f0`, `f1`, `afmin`/`afmax`/`afstep`, `agmin`, `wireless`, `guitar`.
+
+Caveat worth keeping: a dictionary entry proves the string is known to the
+firmware, **not** that the method is callable or that its parameters are what
+one would guess. Each needs its own hardware test, and `--diagnose` is the shape
+that test should take.
 
 ## Findings — the vendor's licensing posture (2026-08-27)
 
