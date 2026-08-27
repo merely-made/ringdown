@@ -30,6 +30,7 @@ struct Args {
     diagnose: bool,
     trace: bool,
     bank: Option<(i64, i64)>,
+    call: Vec<(String, String)>,
 }
 
 /// Accept either `3` or `0-7`.
@@ -55,6 +56,7 @@ fn parse_args() -> Result<Args, String> {
         diagnose: false,
         trace: false,
         bank: None,
+        call: Vec::new(),
     };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -73,6 +75,11 @@ fn parse_args() -> Result<Args, String> {
                     .next()
                     .ok_or("--bank needs a number or range like 0-7")?;
                 args.bank = Some(parse_range(&v)?);
+            }
+            "--call" => {
+                let m = argv.next().ok_or("--call needs a method name")?;
+                let p = argv.next().unwrap_or_else(|| String::from("{}"));
+                args.call.push((m, p));
             }
             "--diagnose" => args.diagnose = true,
             "--trace" => args.trace = true,
@@ -96,6 +103,9 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
   --write-len <n>    override the assumed write length (default 514)
   --config <path>    also run ReadConfig and write the result here
   --bank <n|a-b>     also run ReadBank for one bank or a range (e.g. 0-7)
+  --call <m> [json]  call any method by wire name, including ones antinode has
+                     no variant for (e.g. --call PrintBank '{\"bank_num\":0}').
+                     Repeatable. Anything arriving after the reply is reported.
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -249,6 +259,12 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
                         }
                     };
                     println!("        bank {n}: {rendered}");
+                    // A reply may be an acknowledgement with the payload
+                    // following separately; check rather than assume.
+                    let trailing = guitar.drain(Duration::from_millis(600)).await;
+                    for line in &trailing {
+                        println!("          + trailing: {line}");
+                    }
                 }
                 Err(e) => println!("        bank {n}: {e}"),
             }
@@ -264,6 +280,37 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
                          and either the banks are genuinely empty or their content lives
                          somewhere other than this result. Reachability is what this tested."
             );
+        }
+    }
+
+    for (method, params_json) in &args.call {
+        println!(
+            "
+[extra] {method} — an arbitrary method call"
+        );
+        let params: serde_json::Value = match serde_json::from_str(params_json) {
+            Ok(v) => v,
+            Err(e) => {
+                println!("        params aren't valid JSON: {e}");
+                continue;
+            }
+        };
+        match guitar.call_named(method, params).await {
+            Ok(v) => {
+                println!(
+                    "        ANSWERED: {}",
+                    serde_json::to_string(&v).unwrap_or_default()
+                );
+            }
+            Err(e) => println!("        {e}"),
+        }
+        let trailing = guitar.drain(Duration::from_millis(800)).await;
+        if trailing.is_empty() {
+            println!("        (nothing followed)");
+        } else {
+            for line in &trailing {
+                println!("        + trailing: {line}");
+            }
         }
     }
 

@@ -21,7 +21,7 @@ use std::time::Duration;
 use antinode::{
     handshake::Banner,
     llt::{self, Ack, LltCode},
-    rpc::{self, Method, Request, RequestIds, Response, Status},
+    rpc::{self, Method, RequestIds, Response, Status},
 };
 use btleplug::api::{
     Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
@@ -362,9 +362,28 @@ impl Guitar {
 
     /// Call a method and return its result.
     pub async fn call(&mut self, method: Method, params: Value) -> Result<Value, TransportError> {
+        self.call_named(method.wire_name(), params).await
+    }
+
+    /// Call a method by its wire name, including one antinode has no
+    /// [`Method`] variant for.
+    ///
+    /// The compressor's keyword dictionary names methods the vendor's own app
+    /// never calls, and the only way to learn whether they are callable — and
+    /// what they want — is to ask the instrument. This is how.
+    pub async fn call_named(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, TransportError> {
         let id = self.ids.next_id();
-        let request = Request::new(id, method, params);
-        let encoded = request.encode()?;
+        let encoded = serde_json::to_string(&serde_json::json!({
+            "jsonrpc": antinode::rpc::JSONRPC_VERSION,
+            "id": id,
+            "method": method,
+            "params": params,
+        }))
+        .map_err(|e| rpc::RpcError::Encode(e.to_string()))?;
 
         let outbound = llt::frame_message(&encoded, id, self.write_len)?;
         let chunked = outbound.is_chunked();
@@ -391,6 +410,17 @@ impl Guitar {
 
         let response = self.await_response(id).await?;
         Ok(response.into_result()?)
+    }
+
+    /// Drain any notifications that arrive within `window` after a call.
+    ///
+    /// A reply is not necessarily the whole answer. `call` returns on the first
+    /// message matching the request id and stops listening, so a device that
+    /// acknowledges first and sends data afterwards would have its data
+    /// discarded — the same shape of mistake that made a working `GetStatus`
+    /// look like silence. This is how to check rather than assume.
+    pub async fn drain(&mut self, window: Duration) -> Vec<String> {
+        self.listen(window).await
     }
 
     /// Read the instrument's status.
