@@ -602,6 +602,43 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H13 — The file mechanism works, and the naming off-by-one is confirmed.**
+
+```
+GetFileInfo /Loops/loop0031.wav -> {"crc32":1693117162,"size":741468}
+GetFileInfo /Loops/loop0001.wav -> {"crc32":27019092,"size":3241564}
+```
+
+Three results in one run:
+
+- **`GetLastRecordingName` returns the *next* filename, not the last written
+  one.** `loop0031.wav` exists and `loop0032.wav` does not, while the method
+  reports `0032`. Every earlier `GetFileInfo` failure was this off-by-one, not
+  a path convention — the paths were right all along, the *number* was one past
+  the end. Any caller wanting the most recent recording must subtract one, and
+  should not assume the reported name is openable.
+- **`GetFileInfo` is confirmed and returns `{crc32, size}`** for a path of the
+  form `/Loops/loopNNNN.wav`. Sizes are real audio: 3.24 MB for loop0001, 741 KB
+  for loop0031.
+- **The H12 retraction's arithmetic checks out.** Two samples of 3.24 MB and
+  0.74 MB bracket the 1.26 MB average that 39 MB across 31 files implies. The
+  storage figure was consistent with the loops from the start, which is what the
+  retraction claimed and this independently confirms.
+
+**Why `crc32` matters beyond a checksum.** `LLT2Manager.sendFile` tracks a
+CRC32 across a transfer, and the dictionary carries `DumpFile`, `file`,
+`file_type`, `offset`, `size` and `data`. So the shape of the file protocol is
+legible: ask `GetFileInfo` for size and checksum, then move the bytes in ranges,
+verifying against the CRC. That is a **read path for bulk data that does not go
+through an RPC result**, and it is the strongest remaining candidate for
+retrieving a configuration without implementing LLT2 first.
+
+`DumpFile` is the untested half. Its parameter names are a guess — `name`
+matches `GetFileInfo`, while the dictionary also offers `file`; `offset` and
+`size` are likely. Despite sitting in the mutating group of F15 by name,
+"dump" here reads as *emit to the caller*, so trying it against an existing loop
+file is a read rather than a change to the instrument.
+
 **H12 — RETRACTED 2026-08-27, same day, by the instrument's owner.** The
 claim below was that the device holds no recordings. It holds **31 loops**.
 
