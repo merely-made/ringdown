@@ -602,6 +602,43 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H10 — Error code 4 is generic; classify on the message. Corrects H8.**
+`GetFileInfo` with `name=/Loops/loop0032.wav` returned **code 4, "open file
+error"** — the same code that carried "Method not found error" for `GetLevels`.
+So code 4 is a general failure code and the *message* is what distinguishes
+causes. H8's claim that "error 4 is a membership test" is wrong as stated: the
+membership test is the message text.
+
+This was a live defect in the sweep, which classified on `code == 4.0` and would
+therefore have filed any existing-but-failing method as not implemented. That is
+the more damaging direction of the two mistakes — it retires a capability that
+exists — and it is the third time this project has drawn a general rule from a
+single observation. Fixed to match on the message.
+
+**H11 — The produce-then-fetch theory is falsified, and the banks are probably
+just empty.** Two results together:
+
+- `GetLastRecordingName` still returns `/Loops/loop0032.wav` *after* a
+  `PrintBank` call, so `PrintBank` does not produce a retrievable file — or at
+  least not one that becomes "the last recording". The H9 speculation that
+  `ReadBank`/`PrintBank` are commands producing output elsewhere is not
+  supported.
+- `ReadBank 1` returns `""` like every other slot, and nothing follows it.
+
+Taken with the `GetStatus` report of **99.5% free space**, the simplest
+explanation is now the likeliest: the user has never created custom banks
+through the vendor's app, the device's bank slots are genuinely empty, and
+`ReadBank` is reporting that accurately. The instrument's current sound would
+then live in the configuration rather than in a bank — which is what
+`ReadConfig` returns, and what LLT2 is still blocking.
+
+**`GetFileInfo` rejects the path it was given.** `/Loops/loop0032.wav` comes
+verbatim from `GetLastRecordingName`, so either the two use different
+conventions (a leading slash, a different root, a name without a directory), or
+the file no longer exists. Worth trying the variants before concluding anything
+about the file mechanism; the method itself clearly exists, since it got far
+enough to try opening something.
+
 **H9 — Five of six swept methods exist, and one of them returns this guitar's
 own resonances.** Sweep results from H2-CC340:
 
