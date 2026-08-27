@@ -1,10 +1,10 @@
 # Antinode — an independent client for the HyVibe smart guitar
 
 **Date:** 2026-08-27
-**Status:** plan; Phase 0 complete but for the name-claim. Repo founded, MPL-2.0
-(D1), workspace and `antinode` crate stubbed and building. No protocol code yet.
-The crates.io reservation (D2) is the one irreversible step and awaits Mark's
-go. Nothing has touched the physical guitar.
+**Status:** in progress. **Phase 0 landed 2026-08-27** — repo founded, MPL-2.0
+(D1), workspace and crate stubbed and building, `antinode` 0.0.1 claimed on
+crates.io (D2). No protocol code yet; Phase 1 is next and needs the physical
+guitar. Nothing has touched the instrument.
 
 ---
 
@@ -117,11 +117,13 @@ Done-conditions:
   **met 2026-08-27** (`cargo build` and `cargo package` both clean; the crate
   is `#![no_std]` and `#![forbid(unsafe_code)]` from the first commit, so the
   sans-io posture is enforced by the compiler rather than by intention)
-- **crates.io `antinode` 0.0.1 reservation published** (Decision D2). The
-  ledger's heddle lesson is explicit: a banked winner unclaimed is a winner
-  lost, and `coppice` (banked "clean" on 2026-07-30, actually taken since
-  2025-01) is the fresh reminder that the check and the claim are one step.
-  This is the single irreversible action in the plan and needs Mark's go.
+- **crates.io `antinode` 0.0.1 reservation published** (Decision D2). —
+  **met 2026-08-27.** The ledger's heddle lesson is explicit: a banked winner
+  unclaimed is a winner lost, and `coppice` (banked "clean" on 2026-07-30,
+  actually taken since 2025-01) is the fresh reminder that the check and the
+  claim are one step.
+
+**Phase 0 is complete.**
 
 ### Phase 1 — Protocol core and the live proof (the instrument that measures everything after it)
 
@@ -427,10 +429,14 @@ is the truth, whatever the APK said.
     GPL work. Had this gone MIT/Apache the answer would also have been fine;
     the point is that MPL-2.0 costs nothing here and is not the trap a
     copyleft-adjacent license might look like at first glance.
-- **D2 — Claim the crates.io name now?** `antinode` is free as of 2026-08-27.
-  The heddle/coppice lessons argue for an immediate `0.0.1` reservation with a
-  real publish. Publishing is irreversible → needs explicit go. Recommend yes,
-  soon.
+- **D2 — Claim the crates.io name. DONE 2026-08-27.** `antinode` 0.0.1
+  published to crates.io (MPL-2.0), confirmed live via the registry API
+  independently of cargo's own success message. The name is claimed with a real
+  publish rather than an intention, per the heddle lesson. Note for the ledger:
+  the crate is a **stub** — a documented `no_std` lib with no protocol code —
+  which is the point. The reservation exists to hold the name while Phase 1 is
+  built, exactly as `mora` and the signalman/postilion/linkboy trio were
+  founded.
 - **D3 — Phase 3 scope.** Which "beyond the app" capability leads. Set after
   Phase 1.
 - **D4 — Is Phase 4 (firmware) ever entered?** Open. Requires its own
@@ -462,5 +468,10 @@ is the truth, whatever the APK said.
   later from the Findings spec if one is ever wanted.
 - **2026-08-27** — D1 decided (MPL-2.0). `LICENSE` installed, workspace and
   `crates/antinode` stub created; `cargo build` and `cargo package` clean.
-  Phase 0 is complete except for the crates.io reservation, which is D2 and
-  waits on Mark: publishing is the one irreversible step in this plan.
+- **2026-08-27 — PHASE 0 LANDED.** Initial commit on `main` (branch renamed
+  from git's `master` default to match the family's four other repos).
+  `antinode` 0.0.1 published to crates.io under MPL-2.0 and confirmed live via
+  the registry API. Next: Phase 1, which cannot start without the physical
+  guitar — the first real code is the LLT codec and its fixtures, which *can*
+  be written and tested before the instrument is in reach, but the phase does
+  not close until `GetStatus` answers from hardware.
