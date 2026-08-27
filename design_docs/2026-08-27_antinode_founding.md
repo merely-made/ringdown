@@ -1,10 +1,11 @@
 # Antinode — an independent client for the HyVibe smart guitar
 
 **Date:** 2026-08-27
-**Status:** in progress. **Phase 0 landed 2026-08-27** — repo founded, MPL-2.0
-(D1), workspace and crate stubbed and building, `antinode` 0.0.1 claimed on
-crates.io (D2). No protocol code yet; Phase 1 is next and needs the physical
-guitar. Nothing has touched the instrument.
+**Status:** in progress. Phase 0 landed 2026-08-27. **Phase 1 is part-done:**
+transport, RPC and probe built; first hardware run made contact and confirmed
+the GATT surface (H1) and the version banner (H2) against a real instrument.
+`GetStatus` is still unanswered (H3) — the phase does not close until it
+answers. Nothing has been written to the guitar's configuration.
 
 ---
 
@@ -455,6 +456,71 @@ until Phase 1's control run.
 
 ---
 
+## Findings — the first hardware run (2026-08-27)
+
+First contact with a real instrument. **Confidence: hardware-verified** for
+everything in this section, which supersedes the static-read confidence of the
+corresponding items above.
+
+Reference instrument, from its own System Menu (an independent second source,
+read off the device before the run so it could not be rationalised after):
+
+| Field | Value |
+|---|---|
+| Guitar (STM, audio DSP) | V1.2.3 |
+| Wless (ESP, connectivity) | V1.3.0 |
+| BT ID | H2-CC340 |
+| Model | R1C0M8 |
+
+**H1 — F1 CONFIRMED. The GATT surface is exactly as recovered.** The device
+advertises `eb65b6c6-…4160` *in the advertisement itself*, and on connection
+both the request and response characteristics are present at the recovered
+UUIDs. Address `D4:8A:FC:93:4C:CA`, advertised name `H2-CC340`, matching the
+System Menu's BT ID.
+
+**H2 — F10 CONFIRMED, and it is the two-processor form.** The connect-time GATT
+read of the response characteristic returned a banner parsing to **STM 1.2.3 /
+ESP 1.3.0** — identical to the System Menu, from a completely different path.
+`stm_was_implied` was false, so this device uses `S<stm>_E<esp>`, not the legacy
+`@version` form. F6's two-processor interpretation is confirmed three ways now:
+the `Status` model, the System Menu's separate "Guitar"/"Wless" rows, and this
+banner.
+
+**H3 — RPC IS UNANSWERED. `GetStatus` timed out after 10s.** Everything up to
+the RPC round-trip works; the request is written without error and nothing comes
+back. Narrowly scoped, and the most important open item.
+
+What the teardown rules *out* as the cause, re-checked after the failure:
+
+- The request shape is right. `ConnectableDeviceCommunicator` builds exactly
+  `new RPCRequest(2.0f, getCounter(), GET_STATUS, MapsKt.emptyMap())`, and
+  `RPCRequest.write$Self` encodes in the order jsonrpc, id, method, params, with
+  `RPCRequestTypeSerializer.serialize` emitting `encodeString(getMethod())` — a
+  plain method name. Antinode's bytes match this.
+- No newline is appended to an unsplit message. `sendMessage` writes
+  `toUtf8Bytes(m)` verbatim; only LLT frames get `\n`.
+- Replies do arrive as notifications: `onCharacteristicChanged` →
+  `readCharacteristic` → `receiveMessage`.
+
+**The most likely remaining cause is the MTU**, and the reason is structural.
+The vendor's client calls `requestMtu(517)` *before* any RPC and treats the
+result as load-bearing — `maxWriteLength` starts at 20 and is only raised in
+`onMtuChanged`. btleplug exposes no MTU API at all (see `ASSUMED_WRITE_LEN`), so
+antinode cannot make that request. A 54-byte `GetStatus` sent over an
+unnegotiated 23-byte MTU becomes a queued/long write, which the device's GATT
+server may not accept as a single attribute value. Note the corollary: at a
+20-byte write length the protocol is *unusable by construction*, since an LLT
+frame's own wrapper exceeds it — which is precisely why the vendor negotiates
+first. Untested, and the next thing to test.
+
+**Instrument defect found and fixed in the same session.** The client discarded
+every notification it did not recognise, so "the device said nothing" and "the
+device said something unexpected" were indistinguishable — the two failures have
+opposite fixes. `TransportError::Timeout` now carries everything overheard, and
+`antinode-probe --diagnose` tries each candidate encoding in turn (numeric vs
+string `jsonrpc`, with/without response, newline-terminated, no `params`) and
+first checks whether the device ever speaks unprompted at all.
+
 ## Findings — the vendor's licensing posture (2026-08-27)
 
 Checked because the project's footing depends on it. **Not legal advice**; this
@@ -595,3 +661,18 @@ is the truth, whatever the APK said.
   - Next: `rpc` (the JSON-RPC envelope and the 32 typed methods) is also
     desk-doable. The phase does not close until `GetStatus` answers from the
     physical guitar.
+- **2026-08-27 — RPC layer landed**, all 32 methods from one macro table, plus
+  Findings F12 (numeric `jsonrpc`) and F13 (the params key table).
+- **2026-08-27 — transport + probe landed**, and the probe made **first contact
+  with a real guitar**. Results in Findings H1–H3: the GATT surface and the
+  version banner are now hardware-verified; `GetStatus` is unanswered. Two
+  corrections fell out of the run and its preparation:
+  - The scan filtered on the advertised service UUID, which would have produced
+    a false negative on any device that does not advertise it. Now matches on
+    service *or* name, recording which.
+  - `Version::parse` was stricter than the vendor's, which strips all non-digit
+    characters per component. The System Menu displays versions as `V1.2.3`, so
+    a banner spelled that way would have been rejected by us and accepted by the
+    vendor's client. Now matches their permissiveness.
+  - The receive path discarded unrecognised notifications, making silence and
+    an unexpected reply look identical. Timeouts now carry what was overheard.

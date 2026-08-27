@@ -45,32 +45,84 @@ pub struct Version {
 }
 
 impl Version {
-    /// Parse a dotted version, tolerating missing trailing components.
+    /// Parse a dotted version the way the vendor's client does.
     ///
-    /// `"2.7"` yields `2.7.0`, matching how the vendor's client reads these.
+    /// Deliberately permissive, because the reference implementation is: it
+    /// splits on `.`, then **discards every non-digit character** within each
+    /// component before parsing it. So `"V1.2.3"` and `"1.2.3"` are the same
+    /// version, which matters — the instrument's own System Menu displays these
+    /// with a leading `V`, and a stricter parser would reject a banner that the
+    /// vendor's client accepts happily.
+    ///
+    /// Components containing no digits are dropped rather than treated as zero,
+    /// and any beyond the third are ignored. Both match the reference
+    /// behaviour. Being liberal here is the right trade: this parses a banner
+    /// whose exact spelling is not yet confirmed against hardware, and the cost
+    /// of over-accepting is far lower than the cost of rejecting a real device.
     pub fn parse(text: &str) -> Option<Version> {
-        let text = text.trim();
-        if text.is_empty() {
-            return None;
-        }
-        let mut parts = text.split('.');
-        let major = parts.next()?.trim().parse().ok()?;
-        let minor = parts
-            .next()
-            .and_then(|p| p.trim().parse().ok())
-            .unwrap_or(0);
-        let patch = parts
-            .next()
-            .and_then(|p| p.trim().parse().ok())
-            .unwrap_or(0);
-        if parts.next().is_some() {
-            return None;
-        }
+        let mut parts = text.split('.').filter_map(|part| {
+            let digits: heapless_digits::Digits =
+                part.chars().filter(char::is_ascii_digit).collect();
+            digits.parse()
+        });
+
+        let major = parts.next()?;
+        let minor = parts.next().unwrap_or(0);
+        let patch = parts.next().unwrap_or(0);
+
         Some(Version {
             major,
             minor,
             patch,
         })
+    }
+}
+
+/// Digit accumulation without an allocation per component.
+mod heapless_digits {
+    /// A component's digits, capped at a length beyond which a version number
+    /// is not a version number.
+    pub struct Digits {
+        buf: [u8; 8],
+        len: usize,
+        overflowed: bool,
+    }
+
+    impl FromIterator<char> for Digits {
+        fn from_iter<T: IntoIterator<Item = char>>(iter: T) -> Self {
+            let mut out = Digits {
+                buf: [0; 8],
+                len: 0,
+                overflowed: false,
+            };
+            for c in iter {
+                if out.len == out.buf.len() {
+                    out.overflowed = true;
+                    break;
+                }
+                out.buf[out.len] = c as u8;
+                out.len += 1;
+            }
+            out
+        }
+    }
+
+    impl Digits {
+        /// The accumulated digits as a number, or `None` if there were none (or
+        /// too many to be meaningful).
+        pub fn parse(&self) -> Option<u16> {
+            if self.len == 0 || self.overflowed {
+                return None;
+            }
+            let mut value: u32 = 0;
+            for &b in &self.buf[..self.len] {
+                value = value * 10 + u32::from(b - b'0');
+                if value > u16::MAX as u32 {
+                    return None;
+                }
+            }
+            Some(value as u16)
+        }
     }
 }
 
@@ -204,7 +256,75 @@ mod tests {
         );
         assert!(Banner::parse("Snonsense_Emore").is_none());
         assert!(Banner::parse("@version ").is_none());
-        assert!(Version::parse("1.2.3.4").is_none());
+    }
+
+    /// The instrument's System Menu shows versions with a leading `V`, and the
+    /// vendor's parser strips non-digits rather than rejecting them. A stricter
+    /// parser would fail on a banner the vendor's client reads fine.
+    #[test]
+    fn a_leading_v_is_ignored_the_way_the_vendor_ignores_it() {
+        let expected = Version {
+            major: 1,
+            minor: 2,
+            patch: 3,
+        };
+        assert_eq!(Version::parse("V1.2.3"), Some(expected));
+        assert_eq!(Version::parse("v1.2.3"), Some(expected));
+        assert_eq!(Version::parse("1.2.3"), Some(expected));
+        assert_eq!(Banner::parse("SV1.2.3_EV1.3.0").unwrap().stm, expected);
+    }
+
+    /// The exact readout from the System Menu of the instrument this was first
+    /// built against, in both spellings the banner might use.
+    #[test]
+    fn the_reference_instruments_versions_parse() {
+        let stm = Version {
+            major: 1,
+            minor: 2,
+            patch: 3,
+        };
+        let esp = Version {
+            major: 1,
+            minor: 3,
+            patch: 0,
+        };
+        for text in ["S1.2.3_E1.3.0", "SV1.2.3_EV1.3.0"] {
+            let banner = Banner::parse(text).unwrap_or_else(|| panic!("failed to parse {text}"));
+            assert_eq!(banner.stm, stm);
+            assert_eq!(banner.esp, esp);
+            assert!(!banner.stm_was_implied);
+        }
+    }
+
+    /// Matching the reference implementation's quirks, not just its happy path.
+    #[test]
+    fn extra_components_are_ignored_and_digitless_ones_dropped() {
+        assert_eq!(
+            Version::parse("1.2.3.4"),
+            Some(Version {
+                major: 1,
+                minor: 2,
+                patch: 3
+            }),
+            "the vendor takes the first three and ignores the rest"
+        );
+        assert!(
+            Version::parse("nonsense").is_none(),
+            "a component with no digits yields nothing to parse"
+        );
+        assert!(Version::parse("").is_none());
+        // A component too large to be one is dropped, exactly as a digitless
+        // component is — so the remaining components shift left rather than the
+        // whole parse failing. Asserted because it is surprising, not because it
+        // is desirable: it only arises on input no real device sends.
+        assert_eq!(
+            Version::parse("999999.1.2"),
+            Some(Version {
+                major: 1,
+                minor: 2,
+                patch: 0
+            })
+        );
     }
 
     #[test]

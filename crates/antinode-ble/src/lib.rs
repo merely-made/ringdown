@@ -60,8 +60,17 @@ pub enum TransportError {
     MissingCharacteristic(&'static str),
 
     /// The device did not answer in time.
-    #[error("timed out after {0:?} waiting for the device")]
-    Timeout(Duration),
+    ///
+    /// Carries everything that *did* arrive while waiting. Without this a
+    /// reply the client failed to recognise is indistinguishable from silence,
+    /// and those two failures have opposite fixes.
+    #[error("{}", timeout_message(.waited, .heard))]
+    Timeout {
+        /// How long was spent waiting.
+        waited: Duration,
+        /// Every notification received while waiting, as lossy UTF-8.
+        heard: Vec<String>,
+    },
 
     /// The device rejected a chunk of a split message.
     #[error("device rejected frame {frame} of a split message: {code:?}")]
@@ -247,6 +256,7 @@ pub struct Guitar {
     notifications: std::pin::Pin<Box<dyn Stream<Item = btleplug::api::ValueNotification> + Send>>,
     ids: RequestIds,
     write_len: usize,
+    trace: bool,
 }
 
 impl Guitar {
@@ -280,6 +290,7 @@ impl Guitar {
 
         Ok(Guitar {
             write_len: ASSUMED_WRITE_LEN,
+            trace: false,
             peripheral,
             request,
             response,
@@ -292,6 +303,43 @@ impl Guitar {
     /// assumed rather than negotiated.
     pub fn write_len(&self) -> usize {
         self.write_len
+    }
+
+    /// Print every notification received to stderr as it arrives.
+    ///
+    /// The client only surfaces messages it recognises, so when a request goes
+    /// unanswered this is what distinguishes a device that said nothing from a
+    /// device that said something unexpected.
+    pub fn set_trace(&mut self, on: bool) {
+        self.trace = on;
+    }
+
+    /// Subscribe and print traffic for a while without sending anything.
+    ///
+    /// Answers the narrower question of whether the device ever emits a
+    /// notification unprompted, which separates "notifications are not working"
+    /// from "the request was not understood".
+    pub async fn listen(&mut self, duration: Duration) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + duration;
+        let mut heard = Vec::new();
+        while let Some(text) = self.next_notification(deadline).await {
+            heard.push(text);
+        }
+        heard
+    }
+
+    /// Write a raw message to the request characteristic, bypassing framing.
+    ///
+    /// For probing only: it is how an alternative encoding gets tested without
+    /// the rest of the stack insisting on the recovered one.
+    pub async fn write_raw(&self, bytes: &[u8], with_response: bool) -> Result<(), TransportError> {
+        let kind = if with_response {
+            WriteType::WithResponse
+        } else {
+            WriteType::WithoutResponse
+        };
+        self.peripheral.write(&self.request, bytes, kind).await?;
+        Ok(())
     }
 
     /// Override the write length.
@@ -367,16 +415,14 @@ impl Guitar {
 
     async fn await_ack(&mut self, object_id: i64, frame: u32) -> Result<Ack, TransportError> {
         let deadline = tokio::time::Instant::now() + ACK_TIMEOUT;
+        let mut heard = Vec::new();
         loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(TransportError::Timeout(ACK_TIMEOUT));
-            }
-            let Ok(Some(note)) = tokio::time::timeout(remaining, self.notifications.next()).await
-            else {
-                return Err(TransportError::Timeout(ACK_TIMEOUT));
+            let Some(text) = self.next_notification(deadline).await else {
+                return Err(TransportError::Timeout {
+                    waited: ACK_TIMEOUT,
+                    heard,
+                });
             };
-            let text = String::from_utf8_lossy(&note.value);
             if let Some(ack) = Ack::parse(&text) {
                 // Acks for other transfers, or for frames already past, are
                 // noise rather than errors.
@@ -384,33 +430,67 @@ impl Guitar {
                     return Ok(ack);
                 }
             }
+            heard.push(text);
         }
     }
 
     async fn await_response(&mut self, id: i64) -> Result<Response, TransportError> {
         let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+        let mut heard = Vec::new();
         loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(TransportError::Timeout(REQUEST_TIMEOUT));
-            }
-            let Ok(Some(note)) = tokio::time::timeout(remaining, self.notifications.next()).await
-            else {
-                return Err(TransportError::Timeout(REQUEST_TIMEOUT));
+            let Some(text) = self.next_notification(deadline).await else {
+                return Err(TransportError::Timeout {
+                    waited: REQUEST_TIMEOUT,
+                    heard,
+                });
             };
-            let text = String::from_utf8_lossy(&note.value);
 
             // The response characteristic multiplexes acknowledgements with
             // replies, so anything that parses as an ack is not our answer.
-            if Ack::parse(&text).is_some() {
-                continue;
-            }
-            if let Ok(response) = Response::decode(&text)
+            if Ack::parse(&text).is_none()
+                && let Ok(response) = Response::decode(&text)
                 && response.answers(id)
             {
                 return Ok(response);
             }
+            heard.push(text);
         }
+    }
+
+    /// The next notification as lossy UTF-8, or `None` once `deadline` passes.
+    ///
+    /// Every notification passes through here so that tracing sees the raw
+    /// traffic, matched or not.
+    async fn next_notification(&mut self, deadline: tokio::time::Instant) -> Option<String> {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let note = tokio::time::timeout(remaining, self.notifications.next())
+            .await
+            .ok()
+            .flatten()?;
+        let text = String::from_utf8_lossy(&note.value).into_owned();
+        if self.trace {
+            eprintln!("      <- {} bytes: {text:?}", note.value.len());
+        }
+        Some(text)
+    }
+}
+
+/// Render a timeout together with whatever was overheard.
+///
+/// The difference between "nothing arrived" and "something arrived that we
+/// failed to recognise" is the entire diagnosis, and those two have opposite
+/// fixes, so the error carries the evidence rather than discarding it.
+fn timeout_message(waited: &Duration, heard: &[String]) -> String {
+    if heard.is_empty() {
+        format!("timed out after {waited:?}; the device sent nothing at all")
+    } else {
+        format!(
+            "timed out after {waited:?}; the device sent {} message(s), none of which was the              expected reply: {heard:?}",
+            heard.len()
+        )
     }
 }
 

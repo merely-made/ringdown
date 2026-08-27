@@ -27,6 +27,8 @@ struct Args {
     scan: Duration,
     write_len: Option<usize>,
     config_out: Option<String>,
+    diagnose: bool,
+    trace: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -34,6 +36,8 @@ fn parse_args() -> Result<Args, String> {
         scan: Duration::from_secs(10),
         write_len: None,
         config_out: None,
+        diagnose: false,
+        trace: false,
     };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -47,6 +51,8 @@ fn parse_args() -> Result<Args, String> {
                 let v = argv.next().ok_or("--write-len needs a value")?;
                 args.write_len = Some(v.parse().map_err(|_| "--write-len isn't a number")?);
             }
+            "--diagnose" => args.diagnose = true,
+            "--trace" => args.trace = true,
             "--config" => {
                 args.config_out = Some(argv.next().ok_or("--config needs a path")?);
             }
@@ -66,6 +72,9 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
   --scan-secs <n>    how long to scan (default 10)
   --write-len <n>    override the assumed write length (default 514)
   --config <path>    also run ReadConfig and write the result here
+  --trace            print every notification as it arrives
+  --diagnose         if GetStatus is unanswered, try candidate encodings and
+                     report which, if any, the device replies to
   -h, --help         this text
 
 Turn the guitar on and make sure the phone app is NOT connected to it: the
@@ -118,6 +127,7 @@ async fn run(args: Args) -> Result<(), TransportError> {
     if let Some(len) = args.write_len {
         guitar.set_write_len(len);
     }
+    guitar.set_trace(args.trace || args.diagnose);
     println!("      connected; GATT surface has both expected characteristics");
     println!(
         "      write length in use: {} (assumed, not negotiated)",
@@ -143,6 +153,10 @@ async fn run(args: Args) -> Result<(), TransportError> {
             println!("      banner did not parse: {e}");
             println!("      (continuing — the banner is not required for RPC)");
         }
+    }
+
+    if args.diagnose {
+        return diagnose(&mut guitar).await;
     }
 
     println!("\n[4/4] GetStatus — the control run...");
@@ -176,6 +190,127 @@ async fn run(args: Args) -> Result<(), TransportError> {
     Ok(())
 }
 
+/// Try each candidate request encoding and report which the device answers.
+///
+/// The recovered encoding is a hypothesis, and when it goes unanswered the
+/// useful next step is not to guess again but to test the small number of
+/// things it could plausibly be, one at a time, and say what happened to each.
+async fn diagnose(guitar: &mut Guitar) -> Result<(), TransportError> {
+    const LISTEN: Duration = Duration::from_secs(4);
+
+    println!(
+        "
+[4/4] diagnostic mode — the recovered encoding went unanswered
+"
+    );
+
+    println!("  first: does the device ever speak unprompted?");
+    let idle = guitar.listen(LISTEN).await;
+    if idle.is_empty() {
+        println!(
+            "    nothing in {LISTEN:?} — expected; it should only answer when asked.
+"
+        );
+    } else {
+        println!(
+            "    it sent {} message(s) with no request: {idle:?}
+",
+            idle.len()
+        );
+    }
+
+    // Each candidate differs from the recovered encoding in exactly one way, so
+    // whichever answers names the single wrong assumption.
+    let candidates: [(&str, String, bool); 5] = [
+        (
+            "recovered: numeric jsonrpc, write-with-response",
+            r#"{"jsonrpc":2.0,"id":90,"method":"GetStatus","params":{}}"#.to_string(),
+            true,
+        ),
+        (
+            "same, but write-WITHOUT-response",
+            r#"{"jsonrpc":2.0,"id":91,"method":"GetStatus","params":{}}"#.to_string(),
+            false,
+        ),
+        (
+            "newline-terminated (as LLT frames are)",
+            "{\"jsonrpc\":2.0,\"id\":92,\"method\":\"GetStatus\",\"params\":{}}
+"
+            .to_string(),
+            true,
+        ),
+        (
+            "spec-compliant STRING jsonrpc (contradicts F12)",
+            r#"{"jsonrpc":"2.0","id":93,"method":"GetStatus","params":{}}"#.to_string(),
+            true,
+        ),
+        (
+            "no params field at all",
+            r#"{"jsonrpc":2.0,"id":94,"method":"GetStatus"}"#.to_string(),
+            true,
+        ),
+    ];
+
+    let mut answered = Vec::new();
+    for (label, payload, with_response) in &candidates {
+        println!("  trying: {label}");
+        println!("    -> {} bytes: {payload:?}", payload.len());
+        match guitar.write_raw(payload.as_bytes(), *with_response).await {
+            Ok(()) => {
+                let heard = guitar.listen(LISTEN).await;
+                if heard.is_empty() {
+                    println!(
+                        "    silence.
+"
+                    );
+                } else {
+                    println!(
+                        "    ANSWERED with {} message(s)
+",
+                        heard.len()
+                    );
+                    answered.push((*label, heard));
+                }
+            }
+            Err(e) => println!(
+                "    the write itself failed: {e}
+"
+            ),
+        }
+    }
+
+    println!(
+        "
+=== diagnosis ==="
+    );
+    if answered.is_empty() {
+        println!(
+            "No encoding drew a reply, and the device never spoke unprompted.
+             That points away from the message format and toward the channel itself:
+             - notifications may not really be enabled (the CCCD write may not have taken),
+             - or writes are not reaching the device despite appearing to succeed, which
+               is what an unnegotiated MTU would do to a 55-byte write.
+             Next: confirm with a generic BLE tool (nRF Connect) that writing this exact
+             payload to the request characteristic produces a notification at all."
+        );
+    } else {
+        println!("These encodings drew a reply:");
+        for (label, heard) in &answered {
+            println!("  - {label}");
+            for line in heard {
+                println!("      {line:?}");
+            }
+        }
+        println!(
+            "
+The one that answered names the assumption to correct in Findings."
+        );
+    }
+
+    let _ = guitar.disconnect().await;
+    Ok(())
+}
+
 /// Turn a failure into the next thing worth trying.
 ///
 /// A probe that fails is still an experiment with a result; what makes it
@@ -200,14 +335,21 @@ fn advice(e: &TransportError) -> &'static str {
              This falsifies Finding F1 — the map is wrong or this is different firmware.\n\
              Dump the real GATT table and record it before going further."
         }
-        TransportError::Timeout(_) => {
-            "Connected and wrote, but nothing came back in time.\n\
-             Candidate causes, in the order worth testing:\n\
-             - The numeric `jsonrpc` (F12) may be wrong after all, and the device is\n\
-               silently rejecting the request. Try the string \"2.0\".\n\
-             - The write may have exceeded the real MTU. Retry with --write-len 20,\n\
-               then bisect upward.\n\
-             - Replies may not arrive as notifications on the response characteristic."
+        TransportError::Timeout { heard, .. } if heard.is_empty() => {
+            "The write succeeded and the device said nothing at all.\n\
+             Since it is silent rather than disagreeing, suspect the channel before the\n\
+             message format. Run:\n\
+             \n\
+                 cargo run -p antinode-probe -- --diagnose\n\
+             \n\
+             which tries each candidate encoding in turn and reports which, if any, it\n\
+             answers — including whether it ever speaks unprompted at all."
+        }
+        TransportError::Timeout { .. } => {
+            "The device replied, but with nothing this client recognised as the answer.\n\
+             That is much closer in than silence: the channel works and the device is\n\
+             talking. The messages it sent are printed in the error above — compare them\n\
+             against the expected envelope and correct the Findings accordingly."
         }
         TransportError::ChunkRejected { .. } => {
             "The device rejected a frame of a split message, which means it IS speaking\n\
