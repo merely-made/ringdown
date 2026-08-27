@@ -14,3 +14,8 @@ categories = ["network-programming", "no-std", "multimedia::audio"]
 path = "src/lib.rs"
 
 [dependencies]
+# JSON is the protocol, so a JSON implementation is not an optional dependency.
+# Both are pulled without default features so the crate stays no_std; `alloc` is
+# required because JSON values are inherently heap-shaped.
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }

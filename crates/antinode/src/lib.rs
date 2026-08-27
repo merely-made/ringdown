@@ -3,20 +3,34 @@
 //! The guitar is driven by JSON-RPC 2.0 carried over a Bluetooth Low Energy
 //! GATT service, with a chunking layer beneath it for messages that exceed the
 //! negotiated MTU. This crate owns that protocol and nothing else: encoding and
-//! decoding, the chunk/reassembly state machine, and the domain model of banks,
-//! effects, and typed DSP parameters.
+//! decoding, the chunk and reassembly state machine, and the domain model of
+//! banks, effects, and typed DSP parameters.
 //!
 //! It performs no I/O. Bytes go in, bytes and events come out, so the same core
 //! serves a desktop Bluetooth shell, a replay harness over captured fixtures,
 //! and — should it ever be wanted — an embedded target. Transport lives in a
 //! separate crate.
 //!
+//! # The connection, in order
+//!
+//! 1. Discover [`GUITAR_SERVICE`].
+//! 2. Set the request characteristic to write-with-response.
+//! 3. Subscribe to notifications on the response characteristic.
+//! 4. *Read* the response characteristic once for the version banner
+//!    ([`handshake::Banner`]).
+//! 5. Request an MTU of [`MTU_REQUEST`]; usable write length is MTU minus
+//!    [`ATT_WRITE_OVERHEAD`].
+//! 6. Exchange JSON-RPC, framed by [`llt`] when a message does not fit.
+//!
 //! # Status
 //!
-//! Founding stub. The protocol map this crate implements is recorded in
-//! `design_docs/2026-08-27_antinode_founding.md`; it was recovered by static
-//! analysis and is **unconfirmed against hardware** until the Phase 1 control
-//! run. Treat every wire detail as a hypothesis until then.
+//! Early. The transport layer ([`llt`], [`handshake`]) is implemented and
+//! tested; the JSON-RPC layer and domain model are not yet written.
+//!
+//! Everything here was recovered by static analysis of the vendor's Android
+//! application and is **unconfirmed against hardware** until the Phase 1
+//! control run described in `design_docs/2026-08-27_antinode_founding.md`.
+//! Treat every wire detail as a hypothesis until a real guitar answers.
 //!
 //! # Interoperability
 //!
@@ -26,3 +40,70 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+extern crate alloc;
+
+pub mod handshake;
+pub mod llt;
+
+/// The guitar's GATT service.
+pub const GUITAR_SERVICE: &str = "eb65b6c6-fec3-4ed1-a6fc-9eff755a4160";
+
+/// The characteristic requests are written to.
+///
+/// Written with response, not without: the vendor's client sets the default
+/// write type explicitly, and a write-without-response would not be flow
+/// controlled against a device that acknowledges every frame.
+pub const GUITAR_CHARACTERISTIC_REQUEST: &str = "eb65b6c6-fec3-4ed1-a6fc-9eff755a4161";
+
+/// The characteristic responses arrive on, by notification.
+///
+/// Also read once during connection setup, where it yields the version banner
+/// rather than a JSON message — see [`handshake`].
+pub const GUITAR_CHARACTERISTIC_RESPONSE: &str = "eb65b6c6-fec3-4ed1-a6fc-9eff755a4162";
+
+/// The MTU the client asks for on connect.
+pub const MTU_REQUEST: u16 = 517;
+
+/// Bytes of ATT overhead subtracted from the MTU to get the usable write
+/// length.
+pub const ATT_WRITE_OVERHEAD: u16 = 3;
+
+/// The write length before any MTU negotiation has succeeded.
+///
+/// This is not merely a conservative default — it is what the write length
+/// *is* until the peer agrees to more, and it is too small to carry an LLT
+/// frame. A client that has not renegotiated cannot send a chunked message at
+/// all, which [`llt::frame_message`] reports rather than silently truncating.
+pub const DEFAULT_WRITE_LEN: usize = 20;
+
+/// Usable write length for a negotiated MTU.
+///
+/// ```
+/// assert_eq!(antinode::write_len_for_mtu(517), 514);
+/// assert_eq!(antinode::write_len_for_mtu(23), 20);
+/// ```
+pub fn write_len_for_mtu(mtu: u16) -> usize {
+    mtu.saturating_sub(ATT_WRITE_OVERHEAD) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negotiated_mtu_yields_the_expected_write_length() {
+        assert_eq!(write_len_for_mtu(MTU_REQUEST), 514);
+    }
+
+    #[test]
+    fn the_minimum_ble_mtu_yields_the_documented_default() {
+        assert_eq!(write_len_for_mtu(23), DEFAULT_WRITE_LEN);
+    }
+
+    #[test]
+    fn a_nonsensical_mtu_does_not_underflow() {
+        assert_eq!(write_len_for_mtu(0), 0);
+    }
+}

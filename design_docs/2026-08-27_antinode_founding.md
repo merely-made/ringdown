@@ -136,7 +136,16 @@ Done-conditions:
 - **LLT codec, sans-io, round-trips against captured fixtures.** Chunk a
   message larger than the write length and reassemble it; the fixture set
   includes a payload containing quotes and backslashes, to prove the iterative
-  chunk-sizing loop (Findings F5) rather than an arithmetic split.
+  chunk-sizing loop (Findings F5) rather than an arithmetic split. —
+  **met 2026-08-27.** `llt` and `handshake` implemented; 21 tests plus a
+  doctest, `cargo clippy` and `cargo fmt` clean, no warnings. Covered:
+  escaping-heavy payloads, control characters (the six-character worst case),
+  multi-byte characters never split across a frame boundary, every frame within
+  the write length, contiguous 1-based sequencing, reassembly equalling the
+  original, refusal at the un-negotiated 20-byte write length, status-code
+  round-trip, and ack-versus-reply demultiplexing. These are property tests
+  written against the recovered spec — **not** fixtures captured from a real
+  device, which remains a Phase 1 item.
 - **JSON-RPC envelope and the 32 typed request/response methods** compile and
   serialize to the wire field names recorded in Findings.
 - **`antinode-ble` connects to the guitar over GATT**, negotiates MTU, writes
@@ -152,6 +161,12 @@ Done-conditions:
 - **The two hardware unknowns are answered** and recorded in Findings: does the
   device require BLE bonding, and how does it advertise (name, service UUID in
   the advertisement)?
+- **The connect sequence is confirmed against hardware** (F9), including that
+  the version banner read (F10) returns what the static read predicts, and
+  which of the two banner forms this guitar uses.
+- **How an over-MTU response arrives is established** (F11's open question),
+  and inbound handling is written to match what was captured rather than to a
+  guess.
 
 ### Phase 2 — Full configuration parity
 
@@ -331,6 +346,48 @@ question.)
 - `EffectDefinition` = `{ name, version, file, guitar_min_version, params[] }`.
 - `Bank` = an ordered chain of effects (a preset).
 
+**F9 — The connection sequence, in order.** From `BLEConnectableDevice`'s GATT
+callbacks, `onServicesDiscovered` onward:
+
+1. Discover the guitar service (F1).
+2. Set the **request** characteristic's write type to Android's `2`
+   (`WRITE_TYPE_DEFAULT`) — i.e. **write with response**, not
+   write-without-response. Consistent with a device that acknowledges every
+   frame; a client must not "optimise" this to no-response.
+3. Enable notifications on the **response** characteristic.
+4. **Read** the response characteristic once — this returns the version banner
+   (F10), not a JSON message.
+5. `requestMtu(517)`.
+6. Signal ready; RPC may begin.
+
+**F10 — A version banner precedes RPC, and it is not JSON.** The connect-time
+read of the response characteristic returns one of two plain-text forms:
+
+- `S<stm>_E<esp>\n` — e.g. `S1.2.3_E2.7.0`; both processors.
+- `@version <esp>\n` — older firmware, ESP only; the vendor's client then
+  **assumes** an STM version of `1.2.2` rather than reading one.
+
+This is distinct from, and earlier than, the `GetVersion` RPC method. Antinode
+parses both forms and flags whether the STM version was reported or assumed
+(`handshake::Banner::stm_was_implied`), because an inherited assumption should
+not be indistinguishable from a device-reported fact.
+
+**F11 — Inbound has no reassembly, and the response characteristic is
+multiplexed.** `receiveMessage` UTF-8-decodes each notification and fans it
+straight out to listeners with **no buffering and no reassembly**. Consequences:
+
+- Every notification is expected to be a complete message on its own.
+- The same characteristic carries *both* LLT acknowledgements and complete
+  JSON-RPC replies, so a client demultiplexes by shape — try to parse an ack,
+  and treat a non-match as a JSON-RPC reply rather than as an error. Antinode
+  does this in `llt::Ack::parse`, which returns `Option` for exactly this
+  reason.
+- **Open question for Phase 1:** how a response larger than the MTU arrives,
+  given the vendor's client cannot reassemble one. Either large replies are
+  chunked by a mechanism not visible in the app, or `ReadConfig` returns
+  something smaller than expected. Do not build inbound reassembly on
+  speculation — capture a real `ReadConfig` first.
+
 **Gaps (need the physical guitar, not more decompiling):**
 - The effect *catalog* (which effects exist, with their `ParamDefinition`s)
   lives in the vendor's Firebase (`hyvibe_factory`), not the APK. Recovered
@@ -471,7 +528,20 @@ is the truth, whatever the APK said.
 - **2026-08-27 — PHASE 0 LANDED.** Initial commit on `main` (branch renamed
   from git's `master` default to match the family's four other repos).
   `antinode` 0.0.1 published to crates.io under MPL-2.0 and confirmed live via
-  the registry API. Next: Phase 1, which cannot start without the physical
-  guitar — the first real code is the LLT codec and its fixtures, which *can*
-  be written and tested before the instrument is in reach, but the phase does
-  not close until `GetStatus` answers from hardware.
+  the registry API.
+- **2026-08-27 — Phase 1 transport layer landed** (the half that needs no
+  hardware). `llt` (framing, chunking, ack parsing) and `handshake` (the
+  connect-time version banner) implemented sans-io on `alloc`; 21 tests and a
+  doctest green, clippy and fmt clean, zero warnings.
+  - Three findings were recovered while grounding the code and are now recorded:
+    **F9** the ordered connect sequence including write-with-response on the
+    request characteristic, **F10** the pre-RPC plain-text version banner in two
+    forms, and **F11** that inbound has no reassembly and the response
+    characteristic multiplexes acks with replies.
+  - F11 leaves a real open question — how an over-MTU response arrives at all —
+    which is deliberately **not** solved in code. Writing speculative inbound
+    reassembly would violate the repo's provenance rule; it waits for a captured
+    `ReadConfig`.
+  - Next: `rpc` (the JSON-RPC envelope and the 32 typed methods) is also
+    desk-doable. The phase does not close until `GetStatus` answers from the
+    physical guitar.
