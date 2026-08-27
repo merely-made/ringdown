@@ -40,6 +40,12 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to wait for a single LLT frame to be acknowledged.
 const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How many times to attempt a connection before giving up.
+const CONNECT_ATTEMPTS: u32 = 3;
+
+/// How long to wait between connection attempts.
+const CONNECT_BACKOFF: Duration = Duration::from_millis(800);
+
 /// What can go wrong talking to the instrument.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
@@ -266,6 +272,41 @@ impl Guitar {
     /// then read the version banner. The one step it cannot follow is
     /// requesting an MTU — see [`Guitar::write_len`].
     pub async fn connect(found: &Found) -> Result<Guitar, TransportError> {
+        Guitar::connect_with_retries(found, CONNECT_ATTEMPTS).await
+    }
+
+    /// Connect, retrying transient failures.
+    ///
+    /// A BLE connect fails for reasons that have nothing to do with the peer
+    /// being wrong: the platform hands out a peripheral handle that has gone
+    /// stale since the scan, the device is mid-advertisement-interval, or the
+    /// adapter is still tearing down a previous session. "Not connected"
+    /// arriving from `connect` itself is the usual shape. One attempt turns
+    /// those into a failed run and an investigation of the wrong thing.
+    pub async fn connect_with_retries(
+        found: &Found,
+        attempts: u32,
+    ) -> Result<Guitar, TransportError> {
+        let mut last = None;
+        for attempt in 1..=attempts.max(1) {
+            match Guitar::connect_once(found).await {
+                Ok(guitar) => return Ok(guitar),
+                Err(e) => {
+                    if attempt < attempts {
+                        eprintln!(
+                            "      connect attempt {attempt} failed ({e}); retrying in {:?}",
+                            CONNECT_BACKOFF
+                        );
+                        tokio::time::sleep(CONNECT_BACKOFF).await;
+                    }
+                    last = Some(e);
+                }
+            }
+        }
+        Err(last.unwrap_or(TransportError::NoAdapter))
+    }
+
+    async fn connect_once(found: &Found) -> Result<Guitar, TransportError> {
         let peripheral = found.peripheral.clone();
         if !peripheral.is_connected().await? {
             peripheral.connect().await?;

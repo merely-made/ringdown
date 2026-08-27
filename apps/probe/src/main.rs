@@ -686,6 +686,15 @@ fn advice(e: &TransportError) -> &'static str {
              This is a protocol-level disagreement about one method — much closer in\n\
              than a silent failure. Record the exact error."
         }
+        TransportError::Bluetooth(_) => {
+            "The Bluetooth stack refused the operation. If this was 'Not connected' during
+             connect, the peripheral handle from the scan had gone stale, or the guitar
+             dropped between being seen and being connected to — antinode now retries
+             that a few times, so a failure here means it failed repeatedly.
+             
+             Check the guitar is awake, then try again. If Windows has gotten confused,
+             toggling Bluetooth off and on clears its device cache."
+        }
         _ => "Record what happened in the plan's Findings before changing anything.",
     }
 }
