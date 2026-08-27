@@ -1,8 +1,13 @@
 # Antinode — an independent client for the HyVibe smart guitar
 
 **Date:** 2026-08-27
-**Status:** in progress. Phase 0 landed 2026-08-27. **Phase 1 is most of the
-way:** the GATT surface (H1), the version banner (H2), and a full `GetStatus`
+**Status:** in progress. **Phase 1 is complete** as of 2026-08-27: the
+protocol is hardware-verified, both transports are implemented, and the one
+method that resisted (`ReadConfig`) is established as broken in the firmware
+rather than blocked by anything antinode does — its contents reachable by
+composing methods that work (H19). Detail below.
+
+Phase 0 landed 2026-08-27. **Phase 1 record:** the GATT surface (H1), the version banner (H2), and a full `GetStatus`
 round-trip (H4) are hardware-verified against instrument H2-CC340, with the
 device's reply pinned as a test fixture. Remaining before the phase closes: `ReadConfig`,
 which needs **LLT2** (H6/F14). The file mechanism was explored as a way around
@@ -602,6 +607,48 @@ connection.
 bonding is ever required, and the effect catalog itself — all reachable now via
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
+
+**H19 — `ReadConfig` is dead code in the vendor's app too, and antinode does
+not need it.** Two facts close H18.
+
+**The app never calls it.** `readConfig` appears nowhere in the application
+layer — the same as `readBank` and the nineteen dictionary methods. It exists
+in the vendor's library, is exposed by `DeviceCommunicator`, and is invoked by
+nothing. So the firmware handler behind it has almost certainly never been
+exercised by the vendor either, which is the readiest explanation for why it
+hangs: untested code, and a bug in it that nobody was positioned to notice.
+
+**And its reply would be enormous.** `UserConfig` carries
+`favorite_banks: List<Bank>` — every bank, each with its full effect chain and
+every parameter — alongside the equalizer, metronome, aux settings, and device
+identity. Even compressed that dwarfs a single notification, on a device with
+no inbound reassembly on either side (F11). A handler attempting to serialise
+it is a plausible place to run out of memory or overrun a buffer, which fits
+the observed symptom exactly: no reply at all, and an RPC task that never
+recovers.
+
+**The reframe: the configuration is reachable without it.** Almost everything
+`UserConfig` holds is available from methods already confirmed working:
+
+| `UserConfig` field | Reachable via | Status |
+|---|---|---|
+| `cpu_id`, `version_esp`, `version_stm`, `free_space` | `GetStatus` | confirmed (H4) |
+| `metronome` | `ReadMetronome` | confirmed (H9) |
+| `favorite_banks` | `ReadBank` per index | confirmed (H7) |
+| calibration / feedback filters | `GetAnalysis` | confirmed (H9) |
+| `equalizer` | — | **write-only** |
+| `aux_in_on`, `aux_in_drywet`, `aux_out_*` | — | **write-only** |
+
+So `ReadConfig` was never the gateway it appeared to be. It is one convenience
+call over a set of working ones, and antinode can assemble the same picture by
+composing them. The genuine gap is narrow and worth naming precisely: **the
+equalizer and aux settings are write-only over this protocol.** `SetEQGain`,
+`SetEQBandGain`, `AuxIn`, `AuxInDryWet`, `AuxOut` and `AuxOutDryWet` all set;
+nothing reads them back. A client must therefore treat its own last-written
+values as the record, or read them off the instrument's screen.
+
+`GetLevels` would have been the natural reader for at least the aux path, and
+it is precisely the one swept method the firmware does not implement (H8).
 
 **H17 — LLT2 CONFIRMED AGAINST HARDWARE. The codec is correct.** With the
 transport wired in and selected from the banner, a compressed exchange
