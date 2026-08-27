@@ -5,8 +5,9 @@
 way:** the GATT surface (H1), the version banner (H2), and a full `GetStatus`
 round-trip (H4) are hardware-verified against instrument H2-CC340, with the
 device's reply pinned as a test fixture. Remaining before the phase closes: `ReadConfig`,
-which needs **LLT2** — a second transport, compressed and binary-framed, that
-this firmware selects and antinode does not yet implement (H6/F14). Nothing has been written to the guitar's
+which needs **LLT2** (H6/F14). The file mechanism was explored as a way around
+that and does not reach the configuration (H16), so Phase 2.5 is confirmed
+necessary rather than merely likely. Nothing has been written to the guitar's
 configuration; every exchange so far has been a read.
 
 ---
@@ -601,6 +602,34 @@ connection.
 bonding is ever required, and the effect catalog itself — all reachable now via
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
+
+**H16 — The configuration is not a file. LLT2 is back on the critical path.**
+Using the H15 oracle, **55 directory names** were probed — product-shaped names
+in both capitalisations, plus ESP32 filesystem mount points (`/spiffs`,
+`/littlefs`, `/nvs`, `/flash`, `/sd`) and unix conventions. Exactly two exist:
+
+- **`/Loops`** — the recordings, confirmed readable (H13, H14).
+- **`/Calibration`** — exists; **189 guessed filenames inside it found nothing**.
+
+Nothing resembling `/Config`, `/Settings`, `/Banks`, `/Presets` or `/Data` is
+present. The app is no help here either: its only path-shaped constants are
+Firebase references (`/CONFIGS/hyvibe_user/favorite_banks/`, `metronome`,
+`audio`), because it never reads device files.
+
+**So the H14 hope is dead, and it should be said plainly rather than left to
+fade.** `DumpFile` opened a real bulk read path, and the reasoning that it might
+make `ReadConfig` unnecessary was sound — it just turned out to be false. The
+configuration is not stored anywhere the file mechanism can reach; it lives in
+flash or NVS behind the RPC layer. **`ReadConfig` is the only route to it, and
+`ReadConfig` needs LLT2.** Phase 2.5 is required after all.
+
+What the file path *is* good for is real, just not this: the loops are readable
+and backup-able from the desktop, which the vendor only offers over USB
+mass-storage.
+
+`/Calibration` remains opaque. It exists, holds none of 189 plausible names, and
+may simply be empty — the calibration results are already retrievable through
+`GetAnalysis` (H9), so nothing is obviously missing by not reading it.
 
 **H15 — CONFIRMED. The error code distinguishes a missing file from a missing
 directory, and the device has a filesystem oracle.**

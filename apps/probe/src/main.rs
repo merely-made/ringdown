@@ -33,6 +33,7 @@ struct Args {
     call: Vec<(String, String)>,
     sweep: bool,
     dirs: bool,
+    files: Option<String>,
 }
 
 /// Parse call parameters as JSON, or as comma-separated `key=value` pairs.
@@ -137,6 +138,7 @@ fn parse_args() -> Result<Args, String> {
         call: Vec::new(),
         sweep: false,
         dirs: false,
+        files: None,
     };
     let mut argv = std::env::args().skip(1).peekable();
     while let Some(arg) = argv.next() {
@@ -169,6 +171,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--sweep" => args.sweep = true,
             "--dirs" => args.dirs = true,
+            "--files" => {
+                args.files = Some(argv.next().ok_or("--files needs a directory")?);
+            }
             "--diagnose" => args.diagnose = true,
             "--trace" => args.trace = true,
             "--config" => {
@@ -199,6 +204,8 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
                      ones that would change the instrument are never swept.
   --dirs             map the device filesystem by probing directory names.
                      Read-only: it only ever asks about files that do not exist.
+  --files <dir>      guess filenames inside a directory, using the same oracle.
+                     Read-only. e.g. --files /Calibration
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -388,6 +395,10 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
         probe_directories(guitar).await;
     }
 
+    if let Some(dir) = args.files.as_deref() {
+        probe_files(guitar, dir).await;
+    }
+
     for (method, params_json) in &args.call {
         println!(
             "
@@ -438,6 +449,111 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
     Ok(())
 }
 
+/// Stems worth trying inside a directory, and the extensions to pair them with.
+///
+/// Drawn from the compressor's keyword dictionary and from the one filename
+/// convention actually observed — `/Loops/loop0031.wav`, a lowercase word with
+/// a zero-padded index — rather than from general intuition about filenames.
+const FILE_STEMS: &[&str] = &[
+    "calibration",
+    "cal",
+    "calib",
+    "analysis",
+    "resonance",
+    "resonances",
+    "filter",
+    "filters",
+    "fbk",
+    "feedback",
+    "notch",
+    "biquad",
+    "biquads",
+    "config",
+    "conf",
+    "settings",
+    "data",
+    "guitar",
+    "params",
+    "speaker",
+    "spk",
+    "cal0001",
+    "calibration0001",
+    "analysis0001",
+    "0001",
+    "0",
+    "1",
+];
+
+const FILE_EXTS: &[&str] = &["json", "dat", "bin", "txt", "cfg", "cal", ""];
+
+/// Guess filenames inside a directory, using the same oracle as `--dirs`.
+///
+/// A hit returns real metadata rather than an error, so unlike the directory
+/// sweep this one can find something outright. Still read-only: `GetFileInfo`
+/// reports size and checksum and changes nothing.
+async fn probe_files(guitar: &mut Guitar, dir: &str) {
+    const DIR_EXISTS: f32 = 4.0;
+    const DIR_MISSING: f32 = 5.0;
+
+    let dir = dir.trim_end_matches('/');
+    println!(
+        "
+[extra] filename probe in {dir}"
+    );
+    println!("        read-only; a hit returns size and checksum.");
+
+    let mut hits = Vec::new();
+    let mut saw_dir = false;
+    let mut tried = 0usize;
+
+    for stem in FILE_STEMS {
+        for ext in FILE_EXTS {
+            let name = if ext.is_empty() {
+                format!("{dir}/{stem}")
+            } else {
+                format!("{dir}/{stem}.{ext}")
+            };
+            tried += 1;
+            match guitar
+                .call_named("GetFileInfo", serde_json::json!({ "name": name }))
+                .await
+            {
+                Ok(v) => {
+                    saw_dir = true;
+                    println!(
+                        "        FOUND {name} -> {}",
+                        serde_json::to_string(&v).unwrap_or_default()
+                    );
+                    hits.push(name);
+                }
+                Err(TransportError::Rpc(antinode::rpc::RpcError::Device(e))) => {
+                    if e.code == DIR_EXISTS {
+                        saw_dir = true;
+                    } else if e.code != DIR_MISSING {
+                        println!("        {name}: unexpected code {} ({})", e.code, e.message);
+                    }
+                }
+                Err(e) => {
+                    println!("        {name}: {e}");
+                    return;
+                }
+            }
+        }
+    }
+
+    println!();
+    if !saw_dir {
+        println!("        CONTROL FAILED: every probe said the directory is absent, but");
+        println!("        {dir} was reported present. Treat this run as meaningless.");
+        return;
+    }
+    println!("        {tried} names tried, {} found.", hits.len());
+    if hits.is_empty() {
+        println!("        The directory is there and holds none of these names. Either its");
+        println!("        contents follow a convention not guessed here, or it is empty.");
+    }
+}
+
 /// Directory names worth asking about.
 ///
 /// `/Loops` is first and is not a guess: it is the positive control, known to
@@ -469,6 +585,39 @@ const DIR_CANDIDATES: &[&str] = &[
     "/log",
     "/logs",
     "/tmp",
+    // Second pass: ESP32 filesystem mount points, and more product-shaped
+    // names. The first pass found /Calibration, so the naming is capitalised
+    // and domain-flavoured rather than unix-ish, but both are cheap to ask.
+    "/Cal",
+    "/Analysis",
+    "/Audio",
+    "/Rec",
+    "/Records",
+    "/Music",
+    "/Sounds",
+    "/Samples",
+    "/Bank",
+    "/Preset",
+    "/Effect",
+    "/Fx",
+    "/FX",
+    "/Profile",
+    "/Profiles",
+    "/Guitar",
+    "/Setup",
+    "/Backup",
+    "/IR",
+    "/spiffs",
+    "/littlefs",
+    "/sd",
+    "/sdcard",
+    "/flash",
+    "/nvs",
+    "/etc",
+    "/usr",
+    "/var",
+    "/home",
+    "/root",
 ];
 
 /// A filename chosen to be absent everywhere, so the probe only ever asks about
