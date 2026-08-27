@@ -602,6 +602,42 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H12 — We have been testing read APIs against an empty instrument.** All
+three path forms — `/Loops/loop0032.wav`, `loop0032.wav`,
+`Loops/loop0032.wav` — fail identically with "open file error", which rules
+out the path convention as the cause and leaves the obvious one: **the file
+does not exist.**
+
+The arithmetic in `GetStatus` says the same thing plainly, and it was there all
+along. 7.63 GB free at 99.5% means a total around 7.67 GB and roughly **40 MB
+used** — firmware and system only. There are no recordings on this instrument.
+
+That single fact explains nearly every unexplained result of the session, and
+none of them were protocol problems:
+
+- Eight empty banks: no custom banks were ever created through the vendor's app.
+- `GetFileInfo` failing on every path form: there is no file to open.
+- `PrintBank` returning `true` and producing nothing retrievable: nothing to
+  print.
+
+`GetLastRecordingName` returning `/Loops/loop0032.wav` against an empty
+filesystem means it reports a *remembered or next* name rather than an existing
+file — worth knowing, and not deducible from a device that has recordings.
+
+**The methodological point, which is the durable one.** A read API exercised
+against an empty device returns empty, and empty is indistinguishable from
+broken until you put something there. Several hours went into explaining
+emptiness with transport theories — LLT2, produce-then-fetch, path conventions
+— when the instrument was simply reporting, accurately, that it holds nothing.
+The check that would have caught it was free and sitting in the first
+successful response.
+
+**The test that settles it**, and the right next step before more theorising:
+record a loop on the guitar with its own looper, or create a bank in the
+vendor's app, then re-run `GetLastRecordingName`, `GetFileInfo` and `ReadBank`.
+If they return content, the file and bank mechanisms are confirmed end to end
+and no further protocol work was ever required for them.
+
 **H10 — Error code 4 is generic; classify on the message. Corrects H8.**
 `GetFileInfo` with `name=/Loops/loop0032.wav` returned **code 4, "open file
 error"** — the same code that carried "Method not found error" for `GetLevels`.
