@@ -10,9 +10,10 @@
 //!
 //! # Provenance
 //!
-//! Recovered by static analysis; unconfirmed against hardware until the Phase 1
-//! control run. See `design_docs/2026-08-27_antinode_founding.md`, Findings F4
-//! and F12.
+//! Recovered by static analysis and **confirmed against a real instrument on
+//! 2026-08-27**: `GetStatus` round-trips, and its reply is pinned as a test
+//! fixture. See `design_docs/2026-08-27_antinode_founding.md`, Findings F4,
+//! F12, and H4.
 
 use alloc::{
     string::{String, ToString},
@@ -21,16 +22,20 @@ use alloc::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The protocol version this device expects, **as a JSON number**.
+/// The protocol version antinode sends, as a JSON number.
 ///
-/// Standard JSON-RPC 2.0 requires the string `"2.0"`. This device does not use
-/// it: the vendor's client declares the field as a float and encodes it
-/// numerically, putting `"jsonrpc":2.0` on the wire. Antinode matches the
-/// device rather than the specification, because the device is what has to
-/// accept the message.
+/// The vendor's client declares this field as a float and encodes it
+/// numerically, putting `"jsonrpc":2.0` on the wire where the JSON-RPC 2.0
+/// specification asks for the string `"2.0"`. Antinode sends what the vendor
+/// sends.
 ///
-/// A client that "corrects" this to a string is writing spec-compliant JSON-RPC
-/// at something that does not speak it.
+/// **Hardware correction (2026-08-27).** An earlier reading of this treated the
+/// numeric form as *required*, and warned that a spec-compliant string would be
+/// rejected. Testing against a real guitar falsified that: the device accepts
+/// both forms, and answers both identically. It is lenient on input and it is
+/// the *reply* that is fixed — see [`Response::version`], which always arrives
+/// as a string. Matching the vendor's request encoding is still the right
+/// default, but as the conservative choice rather than a necessity.
 pub const JSONRPC_VERSION: f32 = 2.0;
 
 /// Define the method table once, and derive everything from it.
@@ -196,6 +201,21 @@ impl Request {
     }
 }
 
+/// Accept a protocol version given as either a JSON number or a JSON string.
+///
+/// Needed because the device is inconsistent about which it uses, and being
+/// strict here means discarding every valid reply.
+fn lenient_version<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::Number(n) => Ok(n.as_f64().unwrap_or(0.0) as f32),
+        Value::String(s) => Ok(s.trim().parse().unwrap_or(0.0)),
+        _ => Ok(0.0),
+    }
+}
+
 /// An error object returned by the device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceError {
@@ -213,7 +233,13 @@ pub struct DeviceError {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Response {
     /// Protocol version echoed by the device.
-    #[serde(rename = "jsonrpc", default)]
+    ///
+    /// Accepts a number *or* a string, because the device is asymmetric: it
+    /// takes `2.0` as a number on the way in and answers with `"2.0"` as a
+    /// string on the way out. A client that assumes the reply mirrors the
+    /// request fails to parse every response it receives — which is exactly
+    /// what happened here before hardware said otherwise.
+    #[serde(rename = "jsonrpc", default, deserialize_with = "lenient_version")]
     pub version: f32,
     /// The id of the request this answers.
     #[serde(rename = "id")]
@@ -274,15 +300,20 @@ pub struct Status {
     /// Processor serial, useful for identifying the exact silicon.
     #[serde(rename = "cpu_id", default)]
     pub cpu_id: String,
-    /// Battery remaining, as a fraction.
+    /// Battery remaining, **0–100**.
+    ///
+    /// Note the inconsistency with [`Status::free_space_fraction`], which is a
+    /// 0–1 fraction: a real device reported `batt_left: 46` alongside
+    /// `free_pct: 0.9949`. The two fields use different scales, and the names
+    /// here say which is which rather than papering over it.
     #[serde(rename = "batt_left", default)]
-    pub battery_left: f32,
+    pub battery_percent: f32,
     /// Free storage in gigabytes.
     #[serde(rename = "free_gb", default)]
     pub free_space_gb: f32,
-    /// Free storage as a percentage.
+    /// Free storage as a **0–1 fraction**, not a percentage.
     #[serde(rename = "free_pct", default)]
-    pub free_space_pct: f32,
+    pub free_space_fraction: f32,
     /// Connectivity processor firmware version.
     #[serde(rename = "version_esp", default)]
     pub version_esp: String,
@@ -579,6 +610,60 @@ mod tests {
         assert!(!r.answers(4));
     }
 
+    /// A byte-exact reply captured from a real guitar (H2-CC340, STM 1.2.3 /
+    /// ESP 1.3.0) on 2026-08-27. Every other test in this file asserts against
+    /// the recovered spec; this one asserts against the device.
+    const CAPTURED_GETSTATUS_REPLY: &str = concat!(
+        r#"{"jsonrpc":"2.0","id":90,"result":{"free_gb":7.634,"free_pct":0.9949,"#,
+        r#""batt_left":46,"version_stm":"V1.2.3","version_esp":"V1.3.0","#,
+        r#""cpu_id":"PIdXXddxLAU=","device":"H2S"}}"#,
+        "\n"
+    );
+
+    /// The regression that cost a debugging session: the device takes `jsonrpc`
+    /// as a number but answers with it as a string. Parsing the reply strictly
+    /// discards every valid response, and the symptom is indistinguishable from
+    /// the device never answering.
+    #[test]
+    fn the_captured_reply_parses() {
+        let r = Response::decode(CAPTURED_GETSTATUS_REPLY)
+            .expect("a real reply from a real device must parse");
+        assert!(r.answers(90));
+        assert_eq!(r.version, 2.0, "the string \"2.0\" must read as 2.0");
+
+        let s: Status = r.result_as().unwrap();
+        assert_eq!(s.device, "H2S");
+        assert_eq!(s.cpu_id, "PIdXXddxLAU=");
+        assert_eq!(s.version_stm, "V1.2.3");
+        assert_eq!(s.version_esp, "V1.3.0");
+        assert_eq!(s.battery_percent, 46.0);
+        assert!((s.free_space_gb - 7.634).abs() < 1e-4);
+        assert!((s.free_space_fraction - 0.9949).abs() < 1e-6);
+    }
+
+    /// The version strings the device sends carry a `V`, and the handshake
+    /// parser has to cope with the same spelling.
+    #[test]
+    fn the_captured_versions_carry_a_v_prefix() {
+        let r = Response::decode(CAPTURED_GETSTATUS_REPLY).unwrap();
+        let s: Status = r.result_as().unwrap();
+        assert!(s.version_stm.starts_with('V'));
+        assert_eq!(
+            crate::handshake::Version::parse(&s.version_stm),
+            crate::handshake::Version::parse("1.2.3"),
+            "a V-prefixed version must read the same as a bare one"
+        );
+    }
+
+    #[test]
+    fn a_numeric_jsonrpc_in_a_reply_also_parses() {
+        // Accepting both directions costs nothing and guards against firmware
+        // that answers the way it is asked.
+        let r = Response::decode(r#"{"jsonrpc":2.0,"id":5,"result":null}"#).unwrap();
+        assert_eq!(r.version, 2.0);
+        assert!(r.answers(5));
+    }
+
     #[test]
     fn a_status_result_decodes_into_its_type() {
         let r = Response::decode(
@@ -592,7 +677,7 @@ mod tests {
         assert_eq!(s.cpu_id, "DEADBEEF");
         assert_eq!(s.version_stm, "1.2.3");
         assert_eq!(s.version_esp, "2.7.0");
-        assert!((s.battery_left - 0.42).abs() < 1e-6);
+        assert!((s.battery_percent - 0.42).abs() < 1e-6);
     }
 
     /// A device that omits fields must not fail the whole decode.
@@ -602,7 +687,7 @@ mod tests {
         let s: Status = r.result_as().unwrap();
         assert_eq!(s.device, "HyVibe");
         assert_eq!(s.cpu_id, "");
-        assert_eq!(s.battery_left, 0.0);
+        assert_eq!(s.battery_percent, 0.0);
     }
 
     #[test]

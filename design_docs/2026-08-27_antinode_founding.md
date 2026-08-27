@@ -1,11 +1,13 @@
 # Antinode — an independent client for the HyVibe smart guitar
 
 **Date:** 2026-08-27
-**Status:** in progress. Phase 0 landed 2026-08-27. **Phase 1 is part-done:**
-transport, RPC and probe built; first hardware run made contact and confirmed
-the GATT surface (H1) and the version banner (H2) against a real instrument.
-`GetStatus` is still unanswered (H3) — the phase does not close until it
-answers. Nothing has been written to the guitar's configuration.
+**Status:** in progress. Phase 0 landed 2026-08-27. **Phase 1 is most of the
+way:** the GATT surface (H1), the version banner (H2), and a full `GetStatus`
+round-trip (H4) are hardware-verified against instrument H2-CC340, with the
+device's reply pinned as a test fixture. Remaining before the phase closes:
+`ReadConfig` for the live effect catalog, how an over-MTU reply arrives (F11),
+and whether bonding is required. Nothing has been written to the guitar's
+configuration; every exchange so far has been a read.
 
 ---
 
@@ -160,6 +162,8 @@ Done-conditions:
   `battLeft`, `versionESP`, and `versionSTM` from the real instrument. This is
   the positive control: it promotes the whole static map from static-read to
   hardware-verified in one shot, per the repo's provenance rule.
+- **`GetStatus` answers from the real instrument.** — **met 2026-08-27** (H4);
+  the reply is pinned as a fixture in `rpc.rs`.
 - **`ReadConfig` returns the live effect catalog**, and it is persisted as the
   authoritative fixture. This closes the "effect catalog lives in the vendor's
   Firebase, not the APK" gap (Findings, Gaps) by reading it from the guitar
@@ -520,6 +524,57 @@ opposite fixes. `TransportError::Timeout` now carries everything overheard, and
 `antinode-probe --diagnose` tries each candidate encoding in turn (numeric vs
 string `jsonrpc`, with/without response, newline-terminated, no `params`) and
 first checks whether the device ever speaks unprompted at all.
+
+**H4 — RPC CONFIRMED. `GetStatus` round-trips, and H3 was our bug.** The
+diagnostic run answered on **all five** candidate encodings, including the
+original. The request had been correct from the start; the client was failing to
+parse the reply and silently discarding it. Byte-exact captured reply, now
+pinned as a test fixture in `rpc.rs`:
+
+```json
+{"jsonrpc":"2.0","id":90,"result":{"free_gb":7.634,"free_pct":0.9949,
+ "batt_left":46,"version_stm":"V1.2.3","version_esp":"V1.3.0",
+ "cpu_id":"PIdXXddxLAU=","device":"H2S"}}\n
+```
+
+Four corrections follow, and one of them retracts an earlier finding:
+
+- **F12 is half wrong, and the wrong half was the emphatic half.** The device
+  accepts `jsonrpc` as a number *or* as the spec's string, and answers both
+  identically — so the earlier claim that a spec-compliant client "is writing
+  JSON-RPC at something that does not speak it" is **false**. What is actually
+  fixed is the *reply*: it always arrives with `"jsonrpc":"2.0"` as a **string**.
+  The device is lenient inbound and conventional outbound. Antinode still sends
+  the numeric form to match the vendor, but as the conservative choice rather
+  than a necessity.
+- **That asymmetry was the whole bug.** `Response.version` was typed `f32`, a
+  string would not deserialize into it, `Response::decode` errored, and the
+  receive loop discarded the answer as unrecognised. Assuming a reply mirrors
+  its request is the mistake; the field now accepts either.
+- **`batt_left` and `free_pct` use different scales.** `46` alongside `0.9949`:
+  battery is 0–100, free space is a 0–1 fraction. Renamed to
+  `battery_percent` and `free_space_fraction` so the difference is visible at
+  every call site instead of living in a comment.
+- **Version strings carry a `V`** (`"V1.2.3"`), vindicating the permissive
+  `Version::parse`. A stricter parser would have rejected the device's own
+  spelling.
+
+Also observed: `cpu_id` is base64 (`PIdXXddxLAU=`, 8 bytes decoded — consistent
+with an ESP32 MAC-derived id), `device` is `"H2S"` where the System Menu shows
+model `R1C0M8`, so those are different identifiers. Replies are
+newline-terminated even when unsplit, though the vendor's client does not
+require that on the way out.
+
+**H5 — The guitar recognises antinode as an app client.** Mark observed the
+front-panel mobile-app indicator light up while the probe was connected — the
+same icon the manual documents for "mobile app connection". The instrument
+treats this as a legitimate app session, not merely an anonymous GATT
+connection.
+
+**Still open after this run:** how an over-MTU response arrives (F11), whether
+bonding is ever required, and the effect catalog itself — all reachable now via
+`--config`, since `ReadConfig` is the first request likely to exceed the MTU in
+both directions.
 
 ## Findings — the vendor's licensing posture (2026-08-27)
 

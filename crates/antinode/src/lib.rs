@@ -24,13 +24,15 @@
 //!
 //! # Status
 //!
-//! Early. The transport layer ([`llt`], [`handshake`]) is implemented and
-//! tested; the JSON-RPC layer and domain model are not yet written.
+//! The transport ([`llt`], [`handshake`]) and the JSON-RPC layer ([`rpc`]) are
+//! implemented and tested. The domain model beyond [`rpc::Status`] is not yet
+//! written.
 //!
 //! Everything here was recovered by static analysis of the vendor's Android
-//! application and is **unconfirmed against hardware** until the Phase 1
-//! control run described in `design_docs/2026-08-27_antinode_founding.md`.
-//! Treat every wire detail as a hypothesis until a real guitar answers.
+//! application. As of 2026-08-27 the GATT surface, the version banner, and a
+//! full `GetStatus` round-trip are **confirmed against a real instrument**;
+//! the rest remains a hypothesis until exercised. See
+//! `design_docs/2026-08-27_antinode_founding.md`.
 //!
 //! # Interoperability
 //!

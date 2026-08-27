@@ -164,10 +164,11 @@ async fn run(args: Args) -> Result<(), TransportError> {
     println!("      *** THE PROTOCOL MAP IS CONFIRMED AGAINST HARDWARE ***\n");
     println!("      device          {}", status.device);
     println!("      cpu id          {}", status.cpu_id);
-    println!("      battery         {:.0}%", status.battery_left * 100.0);
+    println!("      battery         {:.0}%", status.battery_percent);
     println!(
-        "      free space      {:.2} GB ({:.0}%)",
-        status.free_space_gb, status.free_space_pct
+        "      free space      {:.2} GB ({:.1}% free)",
+        status.free_space_gb,
+        status.free_space_fraction * 100.0
     );
     println!("      firmware ESP    {}", status.version_esp);
     println!("      firmware STM    {}", status.version_stm);
