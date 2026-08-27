@@ -46,8 +46,10 @@
 
 extern crate alloc;
 
+pub mod compress;
 pub mod handshake;
 pub mod llt;
+pub mod llt2;
 pub mod rpc;
 
 /// The guitar's GATT service.

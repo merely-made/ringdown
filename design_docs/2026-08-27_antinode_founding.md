@@ -603,6 +603,75 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**F17 — LLT2 fully specified and implemented.** Both halves are now in the
+core: `compress` (the JSON codec) and `llt2` (the binary framing).
+
+**The codec.** A nibble-oriented, domain-specific JSON encoder — not a general
+compressor. Structural tokens cost one nibble; a string in the 163-entry
+keyword dictionary costs a nibble plus a byte, so `"jsonrpc"` travels in 12
+bits rather than 72; other strings carry a length then UTF-8; numbers are BCD,
+one nibble per character. Measured on real payloads:
+
+| Message | Raw | Compressed |
+|---|---|---|
+| `GetStatus` request | 55 | **18** (33%) |
+| `GetStatus` reply (captured) | 170 | **77** (45%) |
+| `GetAnalysis` reply (captured) | 67 | 51 (76%) |
+| effect chain | 162 | **48** (30%) |
+
+**The dictionary needed reconstruction.** Ten of the 163 entries are stored in
+the vendor source as symbolic Java constants rather than literals
+(`FirebaseAnalytics.Param.METHOD`, `PresetsActivity.DEFAULT_PRESET_NAME`, and
+so on). Each was resolved from its defining class and then **checked by
+position**: the dictionary is in codepoint order, so `method` must fall between
+`message` and `metronome`, `Default` between `Decay` and `Delay`. All ten
+landed where they had to. Order is the encoding, so a wrong entry is a wrong
+protocol.
+
+**One deliberate divergence from the vendor's decoder.** As decompiled, it
+advances one nibble too many for every multi-nibble token — `BT_STRING_DICT`
+consumes four where the encoder writes three, with the same off-by-one in all
+four variable-length branches and single-nibble tokens correct. Correct-for-
+simple, uniformly-wrong-by-one-for-compound is the signature of a decompiler
+mis-hoisting a loop increment, and such a decoder could not read its own
+encoder's output. `decode` is therefore written as the exact inverse of
+`encode` and the pair is round-trip tested. The peer that matters is the
+firmware.
+
+**The framing needed a second decompiler pass.** `LLT2Manager.sendMessage`
+defeated JADX outright ("Method not decompiled: instruction units count: 514"),
+so the layout was read from a fallback-mode pass over the raw instruction
+stream, transcribing the actual shift-and-mask sequence:
+
+```
+byte 0      transfer type — 'J' (74) for a JSON message
+byte 1      reserved, always zero
+byte 2      object id, low byte
+byte 3-4    frame number, 16-bit little-endian, 1-based
+byte 5-8    total compressed length, 32-bit LE — FIRST FRAME ONLY
+next 2      this frame's payload length, 16-bit LE
+remainder   payload
+```
+
+Header is **11 bytes on the first frame, 7 after**; each carries
+`min(remaining, write_len - header)`. Corroborated independently by
+`onDeviceMessageReceived`, which decompiled cleanly and validates exactly those
+five header bytes before reading a status code from byte 5.
+
+**A compressed message that fits one write is sent bare, with no header at
+all** — the same shape as LLT's short-message path. Limits from the vendor:
+16 KB compressed, 128 KB uncompressed.
+
+**Demultiplexing is unambiguous by construction.** A compressed document always
+begins with the start nibble in the high half of byte zero, so its first byte
+is below `0x10`; an acknowledgement's first byte is the transfer type `'J'`.
+The two inbound shapes cannot be confused, and there is a test asserting it.
+
+**Unverified against hardware.** No compressed exchange has happened yet. 79
+tests pass, including round-trips of both captured device payloads, but that
+demonstrates self-consistency, not agreement with the firmware. The next run
+settles it.
+
 **H16 — The configuration is not a file. LLT2 is back on the critical path.**
 Using the H15 oracle, **55 directory names** were probed — product-shaped names
 in both capitalisations, plus ESP32 filesystem mount points (`/spiffs`,
