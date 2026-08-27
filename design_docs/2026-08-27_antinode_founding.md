@@ -602,6 +602,56 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H9 — Five of six swept methods exist, and one of them returns this guitar's
+own resonances.** Sweep results from H2-CC340:
+
+| Method | Result |
+|---|---|
+| `BTcheck` | `true` |
+| `GetAnalysis` | `[[4,106,-3.3,6],[4,228,-6.8,3.75],[4,545,-7.8,8.1],[4,3760,-3.8,6]]` |
+| `GetLastRecordingName` | `"/Loops/loop0032.wav"` |
+| `GetLevels` | not implemented (error 4) |
+| `PrintBank` | `true` |
+| `ReadMetronome` | `{"bpm":60,"den":8,"num":5}` |
+
+`PrintBank` with `bank_num=0` also returns `true`.
+
+**`GetAnalysis` is the find.** Four four-element rows, and read against the
+dictionary's `nbreso`, `f0`, `Q`, `Gain`, `Notch`, `fbk_params` and `fbk_onoff`
+keys, the shape is almost certainly `[filter_type, frequency_hz, gain_db, Q]`:
+
+| f (Hz) | gain (dB) | Q |
+|---|---|---|
+| 106 | −3.3 | 6 |
+| 228 | −6.8 | 3.75 |
+| 545 | −7.8 | 8.1 |
+| 3760 | −3.8 | 6 |
+
+Every gain is negative, so these are **cuts** — a measured feedback-suppression
+filter bank derived from the instrument's own calibration run. And the
+frequencies are where an acoustic guitar body actually resonates: ~106 Hz sits
+at the Helmholtz air resonance, ~228 Hz at the principal top-plate mode, 545 Hz
+at a higher plate mode.
+
+That is this specific instrument's measured acoustic signature, readable over
+Bluetooth. It is also, precisely, a list of the plate resonances a luthier maps
+when voicing a top — the thing the project is named after. **Confidence:** the
+numbers are hardware-verified; the column interpretation is inference from the
+dictionary and from the values' physical plausibility, and wants confirmation
+against a second instrument or a re-calibration before being relied on.
+
+`GetLastRecordingName` returning a **path** — `/Loops/loop0032.wav` — matters
+structurally: the device has a filesystem with recorded loops, reachable by
+name, and `GetFileInfo` takes exactly such a name. Together with `DumpFile`,
+`offset`, `size` and `file_type` in the dictionary, this is very likely how
+large data leaves the instrument, which would explain `ReadBank` returning `""`
+and `PrintBank` returning `true`: they are commands that *produce* something
+elsewhere, not queries that return it. Testable with `GetFileInfo`.
+
+`ReadMetronome` returning `{"bpm":60,"den":8,"num":5}` is live instrument state
+— 60 bpm in 5/8 — and confirms the metronome parameter names from F13 against
+hardware.
+
 **H8 — The device reports unknown methods, which makes the dictionary
 testable.** `GetLevels` — one of the nineteen names the keyword dictionary
 leaked — returned a clean JSON-RPC error: **code 4, "Method not found error"**.
