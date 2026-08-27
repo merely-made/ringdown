@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 
-use antinode_ble::{Guitar, TransportError, discover};
+use antinode_ble::{Guitar, MatchedBy, TransportError, discover};
 
 struct Args {
     scan: Duration,
@@ -92,17 +92,26 @@ async fn run(args: Args) -> Result<(), TransportError> {
     println!("antinode probe — Phase 1 control run");
     println!("everything below is predicted from static analysis until it answers\n");
 
-    println!("[1/4] scanning {:?} for the guitar service...", args.scan);
-    println!("      service {}", antinode::GUITAR_SERVICE);
+    println!("[1/4] scanning {:?}...", args.scan);
+    println!("      looking for service {}", antinode::GUITAR_SERVICE);
+    println!("      or a device named like the System Menu's BT ID (e.g. H2-SE614)");
     let found = discover(args.scan).await?;
     for (i, f) in found.iter().enumerate() {
+        let how = match f.matched_by {
+            MatchedBy::AdvertisedService => "advertises the guitar service",
+            MatchedBy::Name => "name only — service not in the advertisement",
+        };
         println!(
-            "      found #{i}: {} [{}]",
+            "      found #{i}: {} [{}] — {how}",
             f.name.as_deref().unwrap_or("(unnamed)"),
             f.address
         );
     }
-    println!("      ADVERTISEMENT CONFIRMED — the device advertises the expected service");
+    if found[0].matched_by == MatchedBy::AdvertisedService {
+        println!("      ADVERTISEMENT CONFIRMED — the service UUID is in the advertisement");
+    } else {
+        println!("      matched by name; whether the service exists is settled on connect");
+    }
 
     println!("\n[2/4] connecting to #0...");
     let mut guitar = Guitar::connect(&found[0]).await?;
@@ -174,11 +183,16 @@ async fn run(args: Args) -> Result<(), TransportError> {
 fn advice(e: &TransportError) -> &'static str {
     match e {
         TransportError::NotFound(_) => {
-            "The guitar never advertised the expected service.\n\
-             - Is it powered on and not already connected to the phone app?\n\
-             - It may advertise without the service UUID in the advertisement, which\n\
-               would falsify the assumption behind the scan filter. Try a generic BLE\n\
-               scanner (nRF Connect) and check what it actually advertises."
+            "Nothing in range looked like a guitar.\n\
+             The scan is unfiltered and matches on the service UUID *or* the name, so\n\
+             this is not a scan-filter false negative. Check, in order:\n\
+             - Is it powered on, and is USB mode OFF? USB mode makes it a mass-storage\n\
+               drive, not a Bluetooth peripheral.\n\
+             - Is the phone app connected? It holds the one connection the guitar has.\n\
+             - Is it paired as a Bluetooth *speaker* in the OS? That is Bluetooth Classic\n\
+               audio, a different radio path from the app's BLE control link. Unpair it.\n\
+             - Check the System Menu for the BT ID (e.g. H2-SE614). If the name does not\n\
+               start with H2- and does not contain 'hyvibe', tell antinode what to match."
         }
         TransportError::NoAdapter => "No Bluetooth adapter. Is Bluetooth switched on?",
         TransportError::MissingCharacteristic(_) => {

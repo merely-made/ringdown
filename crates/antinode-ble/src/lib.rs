@@ -85,6 +85,21 @@ pub enum TransportError {
     BadBanner(String),
 }
 
+/// Why a scanned device was taken to be a guitar.
+///
+/// Worth surfacing rather than collapsing to a boolean: a device matched only
+/// by name is a weaker identification than one advertising the service, and a
+/// caller staring at a failed connection deserves to know which it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchedBy {
+    /// The advertisement carried the guitar service UUID. Strongest signal.
+    AdvertisedService,
+    /// The advertised name looks like a HyVibe. Weaker, but many BLE devices
+    /// never advertise their service UUIDs, so this is not a fallback to be
+    /// embarrassed about.
+    Name,
+}
+
 /// A guitar seen while scanning.
 #[derive(Clone)]
 pub struct Found {
@@ -93,6 +108,8 @@ pub struct Found {
     pub name: Option<String>,
     /// The peripheral's address, as the platform reports it.
     pub address: String,
+    /// How this device was identified.
+    pub matched_by: MatchedBy,
 }
 
 impl std::fmt::Debug for Found {
@@ -100,8 +117,20 @@ impl std::fmt::Debug for Found {
         f.debug_struct("Found")
             .field("name", &self.name)
             .field("address", &self.address)
+            .field("matched_by", &self.matched_by)
             .finish()
     }
+}
+
+/// Whether an advertised name looks like a HyVibe system.
+///
+/// The vendor's System Menu calls this the "BT ID" and the manual's example is
+/// `H2-SE614`, so the model prefix plus a unit suffix is the shape to expect.
+/// The bare product name is also accepted, since older units and other models
+/// may not use the `H2-` prefix.
+fn name_looks_like_a_guitar(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    lower.starts_with("h2-") || lower.contains("hyvibe") || lower.starts_with("lag")
 }
 
 fn service_uuid() -> Uuid {
@@ -121,10 +150,24 @@ fn response_uuid() -> Uuid {
         .expect("response characteristic uuid constant is malformed")
 }
 
-/// Scan for guitars advertising the expected service.
+/// Scan for guitars.
 ///
 /// Scans for the whole `timeout` rather than returning on the first hit, so a
 /// caller with more than one instrument in range sees all of them.
+///
+/// # Why the scan is unfiltered
+///
+/// The obvious implementation asks the adapter to filter on the guitar's
+/// service UUID. That is wrong here, and wrong in a way that would be easy to
+/// misread: a great many BLE peripherals do not put their service UUIDs in the
+/// advertisement at all, exposing them only on service discovery after a
+/// connection. Filtering on the service would then return nothing, and
+/// "no guitar found" would look like evidence against the recovered protocol
+/// map when it was only evidence about advertising behaviour.
+///
+/// So the scan is unfiltered and the matching happens here, on either the
+/// service UUID or the advertised name, with [`Found::matched_by`] recording
+/// which. A device is better identified imperfectly than missed silently.
 pub async fn discover(timeout: Duration) -> Result<Vec<Found>, TransportError> {
     let manager = Manager::new().await?;
     let adapter = manager
@@ -134,11 +177,7 @@ pub async fn discover(timeout: Duration) -> Result<Vec<Found>, TransportError> {
         .next()
         .ok_or(TransportError::NoAdapter)?;
 
-    adapter
-        .start_scan(ScanFilter {
-            services: vec![service_uuid()],
-        })
-        .await?;
+    adapter.start_scan(ScanFilter::default()).await?;
 
     // Watch scan events rather than sleeping blind, so a caller sees devices as
     // the adapter reports them.
@@ -159,18 +198,29 @@ pub async fn discover(timeout: Duration) -> Result<Vec<Found>, TransportError> {
                 }
                 if let Ok(peripheral) = adapter.peripheral(&id).await {
                     let props = peripheral.properties().await.ok().flatten();
-                    let advertises = props
+                    let name = props.as_ref().and_then(|p| p.local_name.clone());
+
+                    let matched_by = if props
                         .as_ref()
                         .map(|p| p.services.contains(&service_uuid()))
-                        .unwrap_or(false);
-                    if advertises {
+                        .unwrap_or(false)
+                    {
+                        Some(MatchedBy::AdvertisedService)
+                    } else if name.as_deref().is_some_and(name_looks_like_a_guitar) {
+                        Some(MatchedBy::Name)
+                    } else {
+                        None
+                    };
+
+                    if let Some(matched_by) = matched_by {
                         seen.push(Found {
-                            name: props.as_ref().and_then(|p| p.local_name.clone()),
+                            name,
                             address: props
                                 .as_ref()
                                 .map(|p| p.address.to_string())
                                 .unwrap_or_default(),
                             peripheral,
+                            matched_by,
                         });
                     }
                 }
@@ -402,5 +452,30 @@ mod tests {
     fn the_uuids_are_distinct() {
         assert_ne!(request_uuid(), response_uuid());
         assert_ne!(service_uuid(), request_uuid());
+    }
+
+    #[test]
+    fn the_manuals_bt_id_example_is_recognised() {
+        // The H2 manual's System Menu screenshot shows "BT ID: H2-SE614".
+        assert!(name_looks_like_a_guitar("H2-SE614"));
+        assert!(name_looks_like_a_guitar("h2-se614"));
+        assert!(name_looks_like_a_guitar("  H2-ABC123  "));
+    }
+
+    #[test]
+    fn other_product_spellings_are_recognised() {
+        assert!(name_looks_like_a_guitar("HyVibe"));
+        assert!(name_looks_like_a_guitar("LAG HyVibe"));
+        assert!(name_looks_like_a_guitar("Lag-Guitar"));
+    }
+
+    #[test]
+    fn unrelated_devices_are_not_matched() {
+        for name in ["AirPods", "Galaxy Buds", "MX Master 3", "", "Bose QC45"] {
+            assert!(
+                !name_looks_like_a_guitar(name),
+                "{name} should not look like a guitar"
+            );
+        }
     }
 }
