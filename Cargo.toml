@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "crates/antinode",
+    "crates/antinode-ble",
+    "apps/probe",
 ]
 
 [workspace.package]
