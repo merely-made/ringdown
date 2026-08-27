@@ -46,6 +46,7 @@ extern crate alloc;
 
 pub mod handshake;
 pub mod llt;
+pub mod rpc;
 
 /// The guitar's GATT service.
 pub const GUITAR_SERVICE: &str = "eb65b6c6-fec3-4ed1-a6fc-9eff755a4160";

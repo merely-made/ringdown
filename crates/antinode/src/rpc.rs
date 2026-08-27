@@ -1,0 +1,674 @@
+//! The JSON-RPC layer: requests, responses, and the 32 methods.
+//!
+//! This is JSON-RPC 2.0 in shape, with one deviation that matters — see
+//! [`JSONRPC_VERSION`]. Encoding a request produces a complete message ready to
+//! hand to [`crate::llt`] for framing; decoding takes whatever arrived on the
+//! response characteristic and sorts it into a result or an error.
+//!
+//! Nothing here does I/O or tracks a connection. Request ids are chosen by the
+//! caller, because the caller is what owns the sequence.
+//!
+//! # Provenance
+//!
+//! Recovered by static analysis; unconfirmed against hardware until the Phase 1
+//! control run. See `design_docs/2026-08-27_antinode_founding.md`, Findings F4
+//! and F12.
+
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// The protocol version this device expects, **as a JSON number**.
+///
+/// Standard JSON-RPC 2.0 requires the string `"2.0"`. This device does not use
+/// it: the vendor's client declares the field as a float and encodes it
+/// numerically, putting `"jsonrpc":2.0` on the wire. Antinode matches the
+/// device rather than the specification, because the device is what has to
+/// accept the message.
+///
+/// A client that "corrects" this to a string is writing spec-compliant JSON-RPC
+/// at something that does not speak it.
+pub const JSONRPC_VERSION: f32 = 2.0;
+
+/// Define the method table once, and derive everything from it.
+///
+/// The wire spellings are irregular (`SetEQGain`, not `SetEqGain`), so they
+/// have to be written out. Writing them out *twice* — once for serde and once
+/// for a lookup — is how the two drift apart, so this generates the enum, its
+/// serde renames, [`Method::ALL`], and [`Method::wire_name`] from a single
+/// list.
+macro_rules! define_methods {
+    ($( $(#[$attr:meta])* $variant:ident => $wire:literal ),* $(,)?) => {
+        /// Every method the guitar accepts.
+        ///
+        /// The wire name is not the Rust name: the wire uses pascal case and
+        /// keeps acronyms upper (`"GetStatus"`, `"SetEQBandGain"`).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum Method {
+            $(
+                $(#[$attr])*
+                #[serde(rename = $wire)]
+                $variant,
+            )*
+        }
+
+        impl Method {
+            /// Every method, for exhaustive iteration in tests and tooling.
+            pub const ALL: &'static [Method] = &[ $(Method::$variant),* ];
+
+            /// The name this method has on the wire.
+            pub fn wire_name(self) -> &'static str {
+                match self {
+                    $(Method::$variant => $wire),*
+                }
+            }
+        }
+    };
+}
+
+define_methods! {
+    // -- System --
+    /// Battery, storage, cpu id, and both firmware versions.
+    GetStatus => "GetStatus",
+    /// Firmware version.
+    GetVersion => "GetVersion",
+    /// Set the instrument's clock; recordings are timestamped from it.
+    SetDate => "SetDate",
+    /// Run the instrument's calibration routine.
+    Calibrate => "Calibrate",
+
+    // -- Configuration --
+    /// Read the whole configuration, including the live effect catalog.
+    ReadConfig => "ReadConfig",
+    /// Persist the working configuration to the instrument.
+    SaveConfig => "SaveConfig",
+    /// Replace the working configuration.
+    SetConfig => "SetConfig",
+
+    // -- Banks (presets) --
+    /// Read one bank.
+    ReadBank => "ReadBank",
+    /// Make a bank the active one.
+    SwitchBank => "SwitchBank",
+    /// Append a bank.
+    AddBank => "AddBank",
+    /// Delete a bank.
+    RemoveBank => "RemoveBank",
+    /// Reorder a bank.
+    MoveBank => "MoveBank",
+    /// Rename a bank.
+    SetBankName => "SetBankName",
+    /// Set a bank's output gain.
+    SetGainBank => "SetGainBank",
+
+    // -- Effects --
+    /// Append an effect to a bank's chain.
+    AddEffect => "AddEffect",
+    /// Replace an effect in a bank's chain.
+    UpdateEffect => "UpdateEffect",
+    /// Remove an effect from a bank's chain.
+    RemoveEffect => "RemoveEffect",
+    /// Reorder an effect within a bank's chain.
+    MoveEffect => "MoveEffect",
+    /// Bind a physical control to an effect parameter.
+    SetController => "SetController",
+
+    // -- Equalizer --
+    /// Set overall equalizer gain.
+    SetEqGain => "SetEQGain",
+    /// Set the gain of one equalizer band.
+    SetEqBandGain => "SetEQBandGain",
+
+    // -- Aux routing --
+    /// Toggle the aux input.
+    AuxIn => "AuxIn",
+    /// Aux input dry/wet mix.
+    AuxInDryWet => "AuxInDryWet",
+    /// Toggle the aux output.
+    AuxOut => "AuxOut",
+    /// Aux output dry/wet mix.
+    AuxOutDryWet => "AuxOutDryWet",
+
+    // -- Metronome --
+    /// Start the metronome.
+    StartMetronome => "StartMetronome",
+    /// Stop the metronome.
+    StopMetronome => "StopMetronome",
+    /// Change tempo or time signature while running.
+    UpdateMetronome => "UpdateMetronome",
+
+    // -- Recording --
+    /// Begin recording.
+    StartRecording => "StartRecording",
+    /// End recording.
+    StopRecording => "StopRecording",
+
+    // -- Other --
+    /// Sustain-killer state for a bank.
+    SustainKiller => "SustainKiller",
+    /// Metadata for a stored file.
+    GetFileInfo => "GetFileInfo",
+}
+
+/// A request, ready to serialize.
+///
+/// `params` is deliberately a [`Value`]: its shape varies per method — a map of
+/// strings for most, a typed object for others — and pinning it to one Rust
+/// type would misrepresent the protocol. The [`params`] module builds correct
+/// ones.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Request {
+    /// Protocol version. Always [`JSONRPC_VERSION`], and numeric.
+    #[serde(rename = "jsonrpc")]
+    pub version: f32,
+    /// Correlates the response, and the LLT object id if the message is
+    /// chunked.
+    #[serde(rename = "id")]
+    pub id: i64,
+    /// Which method to invoke.
+    pub method: Method,
+    /// Method-specific arguments.
+    pub params: Value,
+}
+
+impl Request {
+    /// Build a request with the correct protocol version.
+    pub fn new(id: i64, method: Method, params: Value) -> Request {
+        Request {
+            version: JSONRPC_VERSION,
+            id,
+            method,
+            params,
+        }
+    }
+
+    /// Build a request taking no arguments.
+    pub fn no_params(id: i64, method: Method) -> Request {
+        Request::new(id, method, Value::Object(Default::default()))
+    }
+
+    /// Serialize to the string that goes on the wire (or into LLT frames).
+    pub fn encode(&self) -> Result<String, RpcError> {
+        serde_json::to_string(self).map_err(|e| RpcError::Encode(e.to_string()))
+    }
+}
+
+/// An error object returned by the device.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceError {
+    /// Device error code. Numeric on the wire, and not necessarily an integer.
+    pub code: f32,
+    /// Human-readable description from the device.
+    pub message: String,
+}
+
+/// A decoded response.
+///
+/// `id` is `f64` because the device sends it as a JSON number and the vendor's
+/// own client reads it as a float. Use [`Response::id_as_i64`] to compare it
+/// against the id sent.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Response {
+    /// Protocol version echoed by the device.
+    #[serde(rename = "jsonrpc", default)]
+    pub version: f32,
+    /// The id of the request this answers.
+    #[serde(rename = "id")]
+    pub id: f64,
+    /// The result, absent when `error` is present.
+    #[serde(default)]
+    pub result: Option<Value>,
+    /// The error, absent on success.
+    #[serde(default)]
+    pub error: Option<DeviceError>,
+}
+
+impl Response {
+    /// Parse a response from a complete message.
+    pub fn decode(text: &str) -> Result<Response, RpcError> {
+        serde_json::from_str(text.trim()).map_err(|e| RpcError::Decode(e.to_string()))
+    }
+
+    /// The request id as an integer, if it is one.
+    ///
+    /// Returns `None` for a fractional id, which would mean the device answered
+    /// something this client did not send.
+    pub fn id_as_i64(&self) -> Option<i64> {
+        let rounded = self.id as i64;
+        (rounded as f64 == self.id).then_some(rounded)
+    }
+
+    /// Whether this response answers the given request id.
+    pub fn answers(&self, request_id: i64) -> bool {
+        self.id_as_i64() == Some(request_id)
+    }
+
+    /// The result, or the device's error as an `Err`.
+    pub fn into_result(self) -> Result<Value, RpcError> {
+        match (self.result, self.error) {
+            (_, Some(e)) => Err(RpcError::Device(e)),
+            (Some(v), None) => Ok(v),
+            (None, None) => Ok(Value::Null),
+        }
+    }
+
+    /// Deserialize the result into a concrete type.
+    pub fn result_as<T: for<'de> Deserialize<'de>>(self) -> Result<T, RpcError> {
+        let value = self.into_result()?;
+        serde_json::from_value(value).map_err(|e| RpcError::Decode(e.to_string()))
+    }
+}
+
+/// What the device reports for [`Method::GetStatus`].
+///
+/// The two firmware versions are separate because the instrument runs two
+/// processors: one for connectivity, one for the audio DSP.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Status {
+    /// Device model identifier.
+    #[serde(default)]
+    pub device: String,
+    /// Processor serial, useful for identifying the exact silicon.
+    #[serde(rename = "cpu_id", default)]
+    pub cpu_id: String,
+    /// Battery remaining, as a fraction.
+    #[serde(rename = "batt_left", default)]
+    pub battery_left: f32,
+    /// Free storage in gigabytes.
+    #[serde(rename = "free_gb", default)]
+    pub free_space_gb: f32,
+    /// Free storage as a percentage.
+    #[serde(rename = "free_pct", default)]
+    pub free_space_pct: f32,
+    /// Connectivity processor firmware version.
+    #[serde(rename = "version_esp", default)]
+    pub version_esp: String,
+    /// Audio DSP processor firmware version.
+    #[serde(rename = "version_stm", default)]
+    pub version_stm: String,
+}
+
+/// Things that can go wrong at the RPC layer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RpcError {
+    /// The device returned an error object.
+    Device(DeviceError),
+    /// A response could not be parsed.
+    Decode(String),
+    /// A request could not be serialized.
+    Encode(String),
+}
+
+impl core::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RpcError::Device(e) => write!(f, "device error {}: {}", e.code, e.message),
+            RpcError::Decode(m) => write!(f, "could not decode response: {m}"),
+            RpcError::Encode(m) => write!(f, "could not encode request: {m}"),
+        }
+    }
+}
+
+impl core::error::Error for RpcError {}
+
+/// Builders for each method's arguments.
+///
+/// The wire keys are terse and inconsistent (`bank_num`, `effect_num`, `src`,
+/// `dst`), so these exist to keep that vocabulary in one place rather than
+/// spread across call sites as string literals.
+pub mod params {
+    use super::*;
+    use serde_json::json;
+
+    /// No arguments.
+    pub fn none() -> Value {
+        json!({})
+    }
+
+    /// A bank, by index.
+    pub fn bank(bank_num: i64) -> Value {
+        json!({ "bank_num": bank_num })
+    }
+
+    /// A single unnamed value, for the dry/wet and gain setters.
+    pub fn value(v: f32) -> Value {
+        json!({ "value": v })
+    }
+
+    /// An on/off toggle, for the aux switches.
+    pub fn toggle(on: bool) -> Value {
+        json!({ "toggle": on })
+    }
+
+    /// Overall equalizer gain.
+    pub fn eq_gain(gain: f32) -> Value {
+        json!({ "gain": gain })
+    }
+
+    /// Gain for one equalizer band.
+    pub fn eq_band_gain(band: i64, gain: f32) -> Value {
+        json!({ "band": band, "gain": gain })
+    }
+
+    /// A bank's output gain.
+    pub fn bank_gain(bank_num: i64, gain: f32) -> Value {
+        json!({ "bank_num": bank_num, "gain": gain })
+    }
+
+    /// Rename a bank.
+    pub fn bank_name(bank_num: i64, name: &str) -> Value {
+        json!({ "bank_num": bank_num, "name": name })
+    }
+
+    /// Reorder a bank.
+    pub fn move_bank(from: i64, to: i64) -> Value {
+        json!({ "src": from, "dst": to })
+    }
+
+    /// Reorder an effect within a bank.
+    pub fn move_effect(bank_num: i64, from: i64, to: i64) -> Value {
+        json!({ "bank_num": bank_num, "effect_num": from, "effect_dest": to })
+    }
+
+    /// Remove an effect from a bank.
+    pub fn remove_effect(bank_num: i64, effect_num: i64) -> Value {
+        json!({ "bank_num": bank_num, "effect_num": effect_num })
+    }
+
+    /// Add an effect to a bank. `effect` is a serialized effect object.
+    pub fn add_effect(bank_num: i64, effect: Value) -> Value {
+        json!({ "bank_num": bank_num, "effect": effect })
+    }
+
+    /// Replace an effect in a bank.
+    pub fn update_effect(bank_num: i64, effect_num: i64, effect: Value) -> Value {
+        json!({ "bank_num": bank_num, "effect_num": effect_num, "effect": effect })
+    }
+
+    /// Add a bank. `bank` is a serialized bank object.
+    pub fn add_bank(bank_num: i64, bank: Value) -> Value {
+        json!({ "bank_num": bank_num, "bank": bank })
+    }
+
+    /// Bind a physical control to an effect parameter, with its own range.
+    pub fn set_controller(
+        bank_num: i64,
+        effect_num: i64,
+        parameter: &str,
+        source: &str,
+        min: Option<f32>,
+        max: Option<f32>,
+    ) -> Value {
+        json!({
+            "bank_num": bank_num,
+            "effect_num": effect_num,
+            "parameter": parameter,
+            "source": source,
+            "min": min,
+            "max": max,
+        })
+    }
+
+    /// Sustain-killer state for a bank.
+    pub fn sustain_killer(bank_num: i64, killed: Option<bool>, reset: Option<bool>) -> Value {
+        json!({ "bank_num": bank_num, "killed": killed, "reset": reset })
+    }
+
+    /// Start recording. `free` selects free-running rather than bar-locked.
+    pub fn start_recording(free: bool) -> Value {
+        json!({ "free": free })
+    }
+
+    /// Metronome tempo and time signature.
+    ///
+    /// `num`/`den` are the time signature; `bars` is the loop length.
+    pub fn metronome(bpm: i64, num: Option<i64>, den: Option<i64>, bars: Option<i64>) -> Value {
+        json!({ "bpm": bpm, "num": num, "den": den, "bars": bars })
+    }
+
+    /// Set the instrument's clock.
+    pub fn date(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> Value {
+        json!({
+            "year": year, "month": month, "day": day,
+            "hour": hour, "minute": minute, "second": second,
+        })
+    }
+
+    /// Metadata for a stored file, by name.
+    pub fn file_info(name: &str) -> Value {
+        json!({ "name": name })
+    }
+}
+
+/// Allocate request ids.
+///
+/// The device correlates responses by id, and LLT reuses the same value as its
+/// object id, so ids must not repeat within a session. Starts at 1: the
+/// vendor's client treats 0 as unset.
+#[derive(Debug, Clone)]
+pub struct RequestIds {
+    next: i64,
+}
+
+impl Default for RequestIds {
+    fn default() -> Self {
+        RequestIds { next: 1 }
+    }
+}
+
+impl RequestIds {
+    /// A fresh sequence starting at 1.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The next id, wrapping before it could ever go negative.
+    pub fn next_id(&mut self) -> i64 {
+        let id = self.next;
+        self.next = if self.next == i64::MAX {
+            1
+        } else {
+            self.next + 1
+        };
+        id
+    }
+}
+
+/// Collect every wire name, for tooling that needs the vocabulary.
+pub fn all_method_names() -> Vec<&'static str> {
+    Method::ALL.iter().map(|m| m.wire_name()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+
+    #[test]
+    fn the_protocol_version_is_a_number_not_a_string() {
+        let req = Request::no_params(1, Method::GetStatus);
+        let encoded = req.encode().unwrap();
+        assert!(
+            encoded.contains("\"jsonrpc\":2.0"),
+            "must be numeric 2.0, not the spec's string: {encoded}"
+        );
+        assert!(
+            !encoded.contains("\"jsonrpc\":\"2.0\""),
+            "a string here would be spec-correct and device-wrong: {encoded}"
+        );
+    }
+
+    #[test]
+    fn a_minimal_request_has_the_expected_shape() {
+        let encoded = Request::no_params(7, Method::GetStatus).encode().unwrap();
+        let v: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["method"], "GetStatus");
+        assert!(v["params"].is_object());
+    }
+
+    #[test]
+    fn every_method_has_a_distinct_wire_name() {
+        let names = all_method_names();
+        assert_eq!(names.len(), 32);
+        assert!(!names.iter().any(|n| n.is_empty()), "a name failed to map");
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 32, "wire names must be unique");
+    }
+
+    /// The wire spellings are irregular — `SetEQGain` is not `SetEqGain` — so
+    /// the ones that differ from a mechanical transform are pinned.
+    #[test]
+    fn the_irregular_wire_names_are_exact() {
+        assert_eq!(Method::SetEqGain.wire_name(), "SetEQGain");
+        assert_eq!(Method::SetEqBandGain.wire_name(), "SetEQBandGain");
+        assert_eq!(Method::GetStatus.wire_name(), "GetStatus");
+        assert_eq!(Method::AuxInDryWet.wire_name(), "AuxInDryWet");
+    }
+
+    #[test]
+    fn methods_round_trip_through_their_wire_names() {
+        for &method in Method::ALL {
+            let encoded = serde_json::to_string(&method).unwrap();
+            let decoded: Method = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(method, decoded);
+            assert_eq!(encoded, format!("\"{}\"", method.wire_name()));
+        }
+    }
+
+    #[test]
+    fn a_success_response_decodes() {
+        let r = Response::decode(r#"{"jsonrpc":2.0,"id":3,"result":{"batt_left":0.87}}"#).unwrap();
+        assert!(r.answers(3));
+        assert_eq!(r.into_result().unwrap()["batt_left"], 0.87);
+    }
+
+    #[test]
+    fn an_error_response_becomes_an_err() {
+        let r =
+            Response::decode(r#"{"jsonrpc":2.0,"id":4,"error":{"code":-32601,"message":"no"}}"#)
+                .unwrap();
+        match r.into_result() {
+            Err(RpcError::Device(e)) => {
+                assert_eq!(e.message, "no");
+                assert_eq!(e.code, -32601.0);
+            }
+            other => panic!("expected a device error, got {other:?}"),
+        }
+    }
+
+    /// The device sends ids as JSON numbers, and the vendor's client reads them
+    /// as floats, so `3` and `3.0` are the same id.
+    #[test]
+    fn ids_sent_as_floats_still_match() {
+        let r = Response::decode(r#"{"jsonrpc":2.0,"id":3.0,"result":null}"#).unwrap();
+        assert!(r.answers(3));
+        assert_eq!(r.id_as_i64(), Some(3));
+    }
+
+    #[test]
+    fn a_fractional_id_answers_nothing() {
+        let r = Response::decode(r#"{"jsonrpc":2.0,"id":3.5,"result":null}"#).unwrap();
+        assert_eq!(r.id_as_i64(), None);
+        assert!(!r.answers(3));
+        assert!(!r.answers(4));
+    }
+
+    #[test]
+    fn a_status_result_decodes_into_its_type() {
+        let r = Response::decode(
+            r#"{"jsonrpc":2.0,"id":1,"result":{"device":"HyVibe","cpu_id":"DEADBEEF",
+                "batt_left":0.42,"free_gb":3.5,"free_pct":58.0,
+                "version_esp":"2.7.0","version_stm":"1.2.3"}}"#,
+        )
+        .unwrap();
+        let s: Status = r.result_as().unwrap();
+        assert_eq!(s.device, "HyVibe");
+        assert_eq!(s.cpu_id, "DEADBEEF");
+        assert_eq!(s.version_stm, "1.2.3");
+        assert_eq!(s.version_esp, "2.7.0");
+        assert!((s.battery_left - 0.42).abs() < 1e-6);
+    }
+
+    /// A device that omits fields must not fail the whole decode.
+    #[test]
+    fn a_sparse_status_still_decodes() {
+        let r = Response::decode(r#"{"jsonrpc":2.0,"id":1,"result":{"device":"HyVibe"}}"#).unwrap();
+        let s: Status = r.result_as().unwrap();
+        assert_eq!(s.device, "HyVibe");
+        assert_eq!(s.cpu_id, "");
+        assert_eq!(s.battery_left, 0.0);
+    }
+
+    #[test]
+    fn a_result_absent_response_is_null_not_an_error() {
+        let r = Response::decode(r#"{"jsonrpc":2.0,"id":9}"#).unwrap();
+        assert!(r.answers(9));
+        assert_eq!(r.into_result().unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn params_use_the_wire_vocabulary() {
+        assert_eq!(params::bank(3)["bank_num"], 3);
+        assert_eq!(params::move_bank(1, 4)["src"], 1);
+        assert_eq!(params::move_bank(1, 4)["dst"], 4);
+        let me = params::move_effect(2, 0, 3);
+        assert_eq!(me["bank_num"], 2);
+        assert_eq!(me["effect_num"], 0);
+        assert_eq!(me["effect_dest"], 3);
+        assert_eq!(params::bank_name(1, "Clean")["name"], "Clean");
+        assert_eq!(params::eq_band_gain(2, -3.5)["band"], 2);
+        assert_eq!(params::toggle(true)["toggle"], true);
+    }
+
+    #[test]
+    fn request_ids_are_unique_and_start_at_one() {
+        let mut ids = RequestIds::new();
+        assert_eq!(ids.next_id(), 1);
+        assert_eq!(ids.next_id(), 2);
+        assert_eq!(ids.next_id(), 3);
+    }
+
+    #[test]
+    fn request_ids_wrap_rather_than_overflow() {
+        let mut ids = RequestIds { next: i64::MAX };
+        assert_eq!(ids.next_id(), i64::MAX);
+        assert_eq!(
+            ids.next_id(),
+            1,
+            "must wrap to a valid id, never to 0 or negative"
+        );
+    }
+
+    /// A request large enough to need chunking must survive the round trip
+    /// through the transport layer beneath it.
+    #[test]
+    fn a_large_request_survives_llt_framing() {
+        use crate::llt;
+
+        let big = Value::Array((0..500).map(|i| serde_json::json!({ "k": i })).collect());
+        let req = Request::new(11, Method::SetConfig, big);
+        let encoded = req.encode().unwrap();
+        assert!(encoded.len() > 514);
+
+        let out = llt::frame_message(&encoded, req.id, 514).unwrap();
+        assert!(out.is_chunked());
+
+        let mut rebuilt = String::new();
+        for frame in out.frames() {
+            let v: Value = serde_json::from_str(frame.trim_end()).unwrap();
+            assert_eq!(
+                v["oid"].as_i64().unwrap(),
+                11,
+                "object id must mirror the request id"
+            );
+            rebuilt.push_str(v["d"].as_str().unwrap());
+        }
+        assert_eq!(rebuilt, encoded);
+    }
+}

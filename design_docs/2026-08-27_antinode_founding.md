@@ -147,7 +147,12 @@ Done-conditions:
   written against the recovered spec — **not** fixtures captured from a real
   device, which remains a Phase 1 item.
 - **JSON-RPC envelope and the 32 typed request/response methods** compile and
-  serialize to the wire field names recorded in Findings.
+  serialize to the wire field names recorded in Findings. — **met 2026-08-27.**
+  `rpc` module: all 32 methods generated from a single table (so the serde
+  renames and the wire-name lookup cannot drift), request/response envelopes,
+  the typed `Status` result, device errors, an id allocator, and builders for
+  every params shape in F13. The numeric-`jsonrpc` deviation (F12) is asserted
+  by a test in both directions. 37 tests green.
 - **`antinode-ble` connects to the guitar over GATT**, negotiates MTU, writes
   to RX (`…4161`), subscribes to notifications on TX (`…4162`).
 - **The spike CLI issues `GetStatus` and prints** `device`, `cpuID`,
@@ -345,6 +350,51 @@ question.)
 - `Control` = `{ min, max, source }` — binds a physical control to a parameter.
 - `EffectDefinition` = `{ name, version, file, guitar_min_version, params[] }`.
 - `Bank` = an ordered chain of effects (a preset).
+
+**F12 — `jsonrpc` is a NUMBER, not the specified string.** This is the single
+most consequential deviation found, and a client that gets it "right" gets it
+wrong. `RPCRequestKt` declares `JSONRPC_VERSION = 2.0f` — a float — and
+`RPCRequest$$serializer` emits it with `encodeFloatElement`. The wire therefore
+carries:
+
+```json
+{"jsonrpc":2.0,"id":1,"method":"GetStatus","params":{}}
+```
+
+JSON-RPC 2.0 §4 requires `"jsonrpc": "2.0"` as a **string**. This device does
+not implement that. Any client built on a conforming JSON-RPC library will emit
+the string form and must be made to emit a number instead. Antinode matches the
+device, and says so at [`rpc::JSONRPC_VERSION`] so nobody later "fixes" it.
+
+Related: request ids are `int` outbound but the **response** envelope types
+`id` as a *float* (`RPCResponse`, and likewise `RPCError.code`). Antinode
+parses ids as `f64` and narrows, so `3` and `3.0` are the same id and a
+fractional id matches nothing.
+
+**F13 — Params wire keys are terse and irregular**, recovered from the
+`*Params` classes' `@SerialName` annotations. They do not follow one
+convention, so they are worth having in one place:
+
+| Method family | Keys |
+|---|---|
+| Bank selection | `bank_num` |
+| Bank rename | `bank_num`, `name` |
+| Bank gain | `bank_num`, `gain` |
+| Bank reorder | `src`, `dst` |
+| Effect reorder | `bank_num`, `effect_num`, `effect_dest` |
+| Effect add/update | `bank_num`, `effect`, `effect_num` |
+| Equalizer | `gain`, `band` |
+| Controller binding | `bank_num`, `effect_num`, `parameter`, `source`, `min`, `max` |
+| Sustain killer | `bank_num`, `killed`, `reset` |
+| Recording | `free` |
+| Metronome | `bpm`, `num`, `den`, `bars` |
+| Aux toggles | `toggle` / `value` |
+| File info | `name` |
+
+Note the inconsistency worth not smoothing over: bank reorder uses `src`/`dst`
+while effect reorder uses `effect_num`/`effect_dest`. `Status` likewise uses
+snake case (`batt_left`, `cpu_id`, `free_gb`, `free_pct`, `version_esp`,
+`version_stm`) where the RPC envelope does not.
 
 **F9 — The connection sequence, in order.** From `BLEConnectableDevice`'s GATT
 callbacks, `onServicesDiscovered` onward:
