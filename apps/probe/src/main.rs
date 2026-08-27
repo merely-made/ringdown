@@ -32,6 +32,7 @@ struct Args {
     bank: Option<(i64, i64)>,
     call: Vec<(String, String)>,
     sweep: bool,
+    dirs: bool,
 }
 
 /// Parse call parameters as JSON, or as comma-separated `key=value` pairs.
@@ -135,6 +136,7 @@ fn parse_args() -> Result<Args, String> {
         bank: None,
         call: Vec::new(),
         sweep: false,
+        dirs: false,
     };
     let mut argv = std::env::args().skip(1).peekable();
     while let Some(arg) = argv.next() {
@@ -166,6 +168,7 @@ fn parse_args() -> Result<Args, String> {
                 args.call.push((m, p));
             }
             "--sweep" => args.sweep = true,
+            "--dirs" => args.dirs = true,
             "--diagnose" => args.diagnose = true,
             "--trace" => args.trace = true,
             "--config" => {
@@ -194,6 +197,8 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
   --sweep            ask the device which of the dictionary's undocumented
                      methods actually exist. Query-shaped methods only — the
                      ones that would change the instrument are never swept.
+  --dirs             map the device filesystem by probing directory names.
+                     Read-only: it only ever asks about files that do not exist.
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -379,6 +384,10 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
         sweep_methods(guitar).await;
     }
 
+    if args.dirs {
+        probe_directories(guitar).await;
+    }
+
     for (method, params_json) in &args.call {
         println!(
             "
@@ -427,6 +436,114 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
     }
 
     Ok(())
+}
+
+/// Directory names worth asking about.
+///
+/// `/Loops` is first and is not a guess: it is the positive control, known to
+/// exist because its files have been read. A run where it does not report as
+/// existing has a broken oracle, and every other line of output is worthless.
+const DIR_CANDIDATES: &[&str] = &[
+    "/Loops",
+    "/Config",
+    "/config",
+    "/Banks",
+    "/banks",
+    "/Presets",
+    "/presets",
+    "/Effects",
+    "/effects",
+    "/System",
+    "/system",
+    "/Settings",
+    "/settings",
+    "/Data",
+    "/data",
+    "/User",
+    "/Factory",
+    "/Firmware",
+    "/firmware",
+    "/Recordings",
+    "/Analysis",
+    "/Calibration",
+    "/log",
+    "/logs",
+    "/tmp",
+];
+
+/// A filename chosen to be absent everywhere, so the probe only ever asks about
+/// files that do not exist and never touches real content.
+const ABSENT_FILE: &str = "zzz_antinode_probe_absent.tmp";
+
+/// Map the filesystem by asking about files that are not there.
+///
+/// Confirmed against controls on 2026-08-27: `GetFileInfo` answers **4** when
+/// the directory exists but the file does not, and **5** when the directory
+/// itself is missing. That difference makes a missing-file query into a
+/// directory-existence test, which is the only enumeration this protocol
+/// offers — there is no listing method.
+///
+/// Entirely read-only. Every request names a file designed not to exist.
+async fn probe_directories(guitar: &mut Guitar) {
+    const DIR_EXISTS: f32 = 4.0;
+    const DIR_MISSING: f32 = 5.0;
+
+    println!(
+        "
+[extra] filesystem probe — which directories exist?"
+    );
+    println!("        read-only: every query names a file designed not to exist.");
+    println!("        code 4 = directory present, code 5 = directory absent.");
+
+    let mut found = Vec::new();
+    let mut control_ok = false;
+
+    for dir in DIR_CANDIDATES {
+        let path = format!("{dir}/{ABSENT_FILE}");
+        let verdict = match guitar
+            .call_named("GetFileInfo", serde_json::json!({ "name": path }))
+            .await
+        {
+            Err(TransportError::Rpc(antinode::rpc::RpcError::Device(e))) => {
+                if e.code == DIR_EXISTS {
+                    if *dir == "/Loops" {
+                        control_ok = true;
+                    }
+                    found.push(*dir);
+                    String::from("EXISTS")
+                } else if e.code == DIR_MISSING {
+                    String::from("absent")
+                } else {
+                    format!("unexpected code {} ({})", e.code, e.message)
+                }
+            }
+            // A file that was supposed to be absent is not: still proof the
+            // directory is there, and worth saying out loud.
+            Ok(v) => {
+                found.push(*dir);
+                format!(
+                    "EXISTS — and the probe file somehow does too: {}",
+                    serde_json::to_string(&v).unwrap_or_default()
+                )
+            }
+            Err(e) => format!("{e}"),
+        };
+        println!("        {dir:<14} {verdict}");
+    }
+
+    println!();
+    if !control_ok {
+        println!("        CONTROL FAILED: /Loops did not report as existing, though its");
+        println!("        files have been read successfully. The oracle is not working on");
+        println!("        this run, so treat every line above as meaningless.");
+        return;
+    }
+    println!("        control passed (/Loops reports as existing).");
+    println!("        directories found: {}", found.join(", "));
+    if found.len() == 1 {
+        println!("        Only the control. Either the configuration is not stored as a");
+        println!("        file, or its directory is not among the names guessed here.");
+    }
 }
 
 /// Render a hex-string reply as bytes, since some methods answer that way.

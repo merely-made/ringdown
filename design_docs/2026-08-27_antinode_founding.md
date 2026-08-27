@@ -602,7 +602,32 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
-**H15 — HYPOTHESIS (untested): the error code distinguishes a missing file
+**H15 — CONFIRMED. The error code distinguishes a missing file from a missing
+directory, and the device has a filesystem oracle.**
+
+The control pair ran with both predictions stated in advance, and both held:
+
+| Probe | Predicted | Actual |
+|---|---|---|
+| `/Loops/zzz_not_here.wav` | 4 | **4** |
+| `/Zzzz/zzz_not_here.wav` | 5 | **5** |
+
+So `GetFileInfo` answers **4** when the directory exists but the file does not,
+and **5** when the directory itself is absent. A missing-file query is therefore
+a **directory-existence test**, which is the only enumeration this protocol
+offers — there is no listing method anywhere in the dictionary.
+
+This is the first claim this session to be established the right way round:
+hypothesis first, predictions written down before the run, a positive control
+and a negative control in the same run. Everything it says is worth more than
+the five corrected claims that preceded it, and it took one extra command to
+get. `antinode-probe --dirs` implements the sweep, with `/Loops` built in as
+the positive control and a loud refusal to report anything if that control
+fails.
+
+*Original hypothesis, retained for the record:*
+
+**H15 (as filed): the error code distinguishes a missing file
 from a missing directory.** Three config-path guesses all failed, but not
 identically:
 
