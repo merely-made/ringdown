@@ -602,6 +602,43 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H15 — HYPOTHESIS (untested): the error code distinguishes a missing file
+from a missing directory.** Three config-path guesses all failed, but not
+identically:
+
+| Path | Code |
+|---|---|
+| `/config.json` | 4 |
+| `/Config/config.json` | **5** |
+| `/config` | 4 |
+
+The one path naming a directory that plausibly does not exist returned a
+different code. Set against the earlier `/Loops/loop0032.wav` failure, which
+returned **4** for a missing file in a directory that certainly *does* exist,
+the shape suggests:
+
+- **code 4** — the directory exists, the file does not
+- **code 5** — the directory itself does not exist
+
+If that holds it is a **filesystem oracle**: directories can be enumerated by
+probing paths and reading the code, with no listing method required. That would
+be the cleanest route to finding where a configuration lives.
+
+**This is a hypothesis from three observations and it is filed as one.** Five
+times this session a general rule was drawn from a single reading and had to be
+corrected — twice about error codes specifically (H8, H10). The distinguishing
+feature of a real test is that it can fail, so before this is used it gets a
+control pair with predictions stated in advance:
+
+| Probe | Predicted | Why |
+|---|---|---|
+| `/Loops/zzz_not_here.wav` | **4** | positive control: directory known to exist |
+| `/Zzzz/zzz_not_here.wav` | **5** | negative control: directory certainly absent |
+
+Both predictions must hold. If the codes come back equal, the hypothesis is
+dead and the earlier code-5 was about something else in that path. If they come
+back as predicted, directory probing is sound and worth automating.
+
 **H14 — `DumpFile` works. The bulk read path is open, and it does not need
 LLT2.** Parameters are `name`, `offset`, `size`; the result is an **uppercase
 hex string** of the file's bytes.
