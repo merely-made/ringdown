@@ -1,0 +1,16 @@
+[package]
+name = "antinode"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Sans-io client protocol for the HyVibe smart guitar: JSON-RPC over BLE, chunked transport, and the effect/parameter model."
+keywords = ["guitar", "bluetooth", "ble", "jsonrpc", "audio"]
+categories = ["network-programming", "no-std", "multimedia::audio"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
