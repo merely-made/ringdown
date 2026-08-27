@@ -21,6 +21,7 @@ use std::time::Duration;
 use antinode::{
     handshake::Banner,
     llt::{self, Ack, LltCode},
+    llt2,
     rpc::{self, Method, RequestIds, Response, Status},
 };
 use btleplug::api::{
@@ -90,6 +91,10 @@ pub enum TransportError {
     /// The protocol core refused to frame a message.
     #[error("framing failed: {0}")]
     Framing(#[from] llt::LltError),
+
+    /// The compressed transport refused to prepare a message.
+    #[error("LLT2 framing failed: {0}")]
+    Framing2(#[from] llt2::Llt2Error),
 
     /// The RPC layer failed, including errors reported by the device.
     #[error("rpc failed: {0}")]
@@ -263,6 +268,19 @@ pub struct Guitar {
     ids: RequestIds,
     write_len: usize,
     trace: bool,
+    transport: Transport,
+}
+
+/// Which of the two transports this instrument speaks.
+///
+/// Chosen from the firmware versions in the connect-time banner, exactly as
+/// the vendor's client chooses: both processors at 1.2.2 or newer means LLT2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// JSON messages in JSON frames.
+    Llt,
+    /// Compressed messages in binary frames.
+    Llt2,
 }
 
 impl Guitar {
@@ -329,9 +347,24 @@ impl Guitar {
         peripheral.subscribe(&response).await?;
         let notifications = peripheral.notifications().await?;
 
+        // Read the banner here rather than leaving it to the caller, because
+        // the firmware versions in it decide which transport to speak, and
+        // that has to be settled before the first message goes out. A banner
+        // that will not parse leaves the older transport in force: small
+        // messages are wire-identical either way, so the conservative choice
+        // costs nothing until a large message needs sending.
+        let transport = match peripheral.read(&response).await {
+            Ok(raw) => Banner::parse(&String::from_utf8_lossy(&raw))
+                .filter(|b| llt2::selects_llt2(b.stm, b.esp))
+                .map(|_| Transport::Llt2)
+                .unwrap_or(Transport::Llt),
+            Err(_) => Transport::Llt,
+        };
+
         Ok(Guitar {
             write_len: ASSUMED_WRITE_LEN,
             trace: false,
+            transport,
             peripheral,
             request,
             response,
@@ -363,8 +396,8 @@ impl Guitar {
     pub async fn listen(&mut self, duration: Duration) -> Vec<String> {
         let deadline = tokio::time::Instant::now() + duration;
         let mut heard = Vec::new();
-        while let Some(text) = self.next_notification(deadline).await {
-            heard.push(text);
+        while let Some(bytes) = self.next_notification(deadline).await {
+            heard.push(render(&bytes));
         }
         heard
     }
@@ -381,6 +414,19 @@ impl Guitar {
         };
         self.peripheral.write(&self.request, bytes, kind).await?;
         Ok(())
+    }
+
+    /// Which transport this connection is using.
+    pub fn transport(&self) -> Transport {
+        self.transport
+    }
+
+    /// Force a transport, overriding what the banner implied.
+    ///
+    /// The version rule is read from the vendor's client rather than stated by
+    /// the device, so being able to contradict it is what makes it testable.
+    pub fn set_transport(&mut self, transport: Transport) {
+        self.transport = transport;
     }
 
     /// Override the write length.
@@ -410,8 +456,8 @@ impl Guitar {
     /// [`Method`] variant for.
     ///
     /// The compressor's keyword dictionary names methods the vendor's own app
-    /// never calls, and the only way to learn whether they are callable — and
-    /// what they want — is to ask the instrument. This is how.
+    /// never calls, and the only way to learn whether they are callable, and
+    /// what they want, is to ask the instrument. This is how.
     pub async fn call_named(
         &mut self,
         method: &str,
@@ -426,20 +472,32 @@ impl Guitar {
         }))
         .map_err(|e| rpc::RpcError::Encode(e.to_string()))?;
 
-        let outbound = llt::frame_message(&encoded, id, self.write_len)?;
+        match self.transport {
+            Transport::Llt => self.send_llt(&encoded, id).await?,
+            Transport::Llt2 => self.send_llt2(&encoded, id).await?,
+        }
+
+        let response = self.await_response(id).await?;
+        Ok(response.into_result()?)
+    }
+
+    /// Send via the older transport: JSON frames, acknowledged as JSON.
+    async fn send_llt(&mut self, encoded: &str, id: i64) -> Result<(), TransportError> {
+        let outbound = llt::frame_message(encoded, id, self.write_len)?;
         let chunked = outbound.is_chunked();
-        let frames = outbound.frames().to_vec();
+        let frames: Vec<Vec<u8>> = outbound
+            .frames()
+            .iter()
+            .map(|f| f.as_bytes().to_vec())
+            .collect();
 
         for (index, frame) in frames.iter().enumerate() {
-            self.peripheral
-                .write(&self.request, frame.as_bytes(), WriteType::WithResponse)
-                .await?;
-
+            self.write_frame(frame).await?;
             // Only split messages are acknowledged frame by frame; an unsplit
             // one is answered directly by its RPC reply.
             if chunked {
                 let frame_no = (index + 1) as u32;
-                let ack = self.await_ack(id, frame_no).await?;
+                let ack = self.await_llt_ack(id, frame_no).await?;
                 if !ack.code.is_continue() && !ack.code.is_terminal_success() {
                     return Err(TransportError::ChunkRejected {
                         frame: frame_no,
@@ -448,9 +506,40 @@ impl Guitar {
                 }
             }
         }
+        Ok(())
+    }
 
-        let response = self.await_response(id).await?;
-        Ok(response.into_result()?)
+    /// Send via LLT2: compressed, in binary frames acknowledged as six bytes.
+    async fn send_llt2(&mut self, encoded: &str, id: i64) -> Result<(), TransportError> {
+        let object_id = id as u8;
+        let outbound = llt2::prepare(encoded, object_id, self.write_len)?;
+        let framed = outbound.is_framed();
+        let frames = outbound.frames().to_vec();
+
+        for (index, frame) in frames.iter().enumerate() {
+            self.write_frame(frame).await?;
+            if framed {
+                let frame_no = (index + 1) as u16;
+                let ack = self.await_llt2_ack(object_id, frame_no).await?;
+                if !ack.code.is_continue() && !ack.code.is_terminal_success() {
+                    return Err(TransportError::ChunkRejected {
+                        frame: u32::from(frame_no),
+                        code: ack.code,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn write_frame(&self, bytes: &[u8]) -> Result<(), TransportError> {
+        if self.trace {
+            eprintln!("      -> {} bytes", bytes.len());
+        }
+        self.peripheral
+            .write(&self.request, bytes, WriteType::WithResponse)
+            .await?;
+        Ok(())
     }
 
     /// Drain any notifications that arrive within `window` after a call.
@@ -458,7 +547,7 @@ impl Guitar {
     /// A reply is not necessarily the whole answer. `call` returns on the first
     /// message matching the request id and stops listening, so a device that
     /// acknowledges first and sends data afterwards would have its data
-    /// discarded — the same shape of mistake that made a working `GetStatus`
+    /// discarded, the same shape of mistake that made a working `GetStatus`
     /// look like silence. This is how to check rather than assume.
     pub async fn drain(&mut self, window: Duration) -> Vec<String> {
         self.listen(window).await
@@ -484,16 +573,17 @@ impl Guitar {
         Ok(())
     }
 
-    async fn await_ack(&mut self, object_id: i64, frame: u32) -> Result<Ack, TransportError> {
+    async fn await_llt_ack(&mut self, object_id: i64, frame: u32) -> Result<Ack, TransportError> {
         let deadline = tokio::time::Instant::now() + ACK_TIMEOUT;
         let mut heard = Vec::new();
         loop {
-            let Some(text) = self.next_notification(deadline).await else {
+            let Some(bytes) = self.next_notification(deadline).await else {
                 return Err(TransportError::Timeout {
                     waited: ACK_TIMEOUT,
                     heard,
                 });
             };
+            let text = String::from_utf8_lossy(&bytes).into_owned();
             if let Some(ack) = Ack::parse(&text) {
                 // Acks for other transfers, or for frames already past, are
                 // noise rather than errors.
@@ -501,7 +591,30 @@ impl Guitar {
                     return Ok(ack);
                 }
             }
-            heard.push(text);
+            heard.push(render(&bytes));
+        }
+    }
+
+    async fn await_llt2_ack(
+        &mut self,
+        object_id: u8,
+        frame: u16,
+    ) -> Result<llt2::Ack2, TransportError> {
+        let deadline = tokio::time::Instant::now() + ACK_TIMEOUT;
+        let mut heard = Vec::new();
+        loop {
+            let Some(bytes) = self.next_notification(deadline).await else {
+                return Err(TransportError::Timeout {
+                    waited: ACK_TIMEOUT,
+                    heard,
+                });
+            };
+            if let Some(ack) = llt2::Ack2::parse(&bytes)
+                && ack.answers(object_id, frame)
+            {
+                return Ok(ack);
+            }
+            heard.push(render(&bytes));
         }
     }
 
@@ -509,30 +622,43 @@ impl Guitar {
         let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
         let mut heard = Vec::new();
         loop {
-            let Some(text) = self.next_notification(deadline).await else {
+            let Some(bytes) = self.next_notification(deadline).await else {
                 return Err(TransportError::Timeout {
                     waited: REQUEST_TIMEOUT,
                     heard,
                 });
             };
 
-            // The response characteristic multiplexes acknowledgements with
-            // replies, so anything that parses as an ack is not our answer.
-            if Ack::parse(&text).is_none()
-                && let Ok(response) = Response::decode(&text)
-                && response.answers(id)
-            {
-                return Ok(response);
+            // A reply may arrive compressed or as plain JSON. Try decompressing
+            // first: the start-nibble check makes that a cheap, unambiguous
+            // test rather than a guess, and plain JSON simply fails it.
+            let candidate = match antinode::compress::decode(&bytes) {
+                Some(json) => Some(json),
+                None => core::str::from_utf8(&bytes).ok().map(String::from),
+            };
+
+            if let Some(text) = candidate {
+                // The response characteristic multiplexes acknowledgements with
+                // replies, so anything that parses as an ack is not our answer.
+                if Ack::parse(&text).is_none()
+                    && let Ok(response) = Response::decode(&text)
+                    && response.answers(id)
+                {
+                    return Ok(response);
+                }
             }
-            heard.push(text);
+            heard.push(render(&bytes));
         }
     }
 
-    /// The next notification as lossy UTF-8, or `None` once `deadline` passes.
+    /// The next notification's raw bytes, or `None` once `deadline` passes.
     ///
-    /// Every notification passes through here so that tracing sees the raw
-    /// traffic, matched or not.
-    async fn next_notification(&mut self, deadline: tokio::time::Instant) -> Option<String> {
+    /// Deliberately **not** decoded to text here. A compressed reply is binary,
+    /// and a lossy UTF-8 conversion would replace every byte outside ASCII with
+    /// a replacement character, destroying the payload before anything had a
+    /// chance to decompress it. Every notification passes through this one
+    /// place so that tracing sees the traffic as it actually arrived.
+    async fn next_notification(&mut self, deadline: tokio::time::Instant) -> Option<Vec<u8>> {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return None;
@@ -541,11 +667,36 @@ impl Guitar {
             .await
             .ok()
             .flatten()?;
-        let text = String::from_utf8_lossy(&note.value).into_owned();
         if self.trace {
-            eprintln!("      <- {} bytes: {text:?}", note.value.len());
+            eprintln!(
+                "      <- {} bytes: {}",
+                note.value.len(),
+                render(&note.value)
+            );
         }
-        Some(text)
+        Some(note.value)
+    }
+}
+
+/// Present a notification readably, decompressing it when it is compressed.
+///
+/// Used for tracing and for the evidence a timeout carries, so that a
+/// compressed frame reads as JSON rather than as a wall of replacement
+/// characters.
+fn render(bytes: &[u8]) -> String {
+    if let Some(json) = antinode::compress::decode(bytes) {
+        return format!("[compressed] {json}");
+    }
+    match core::str::from_utf8(bytes) {
+        Ok(text) => format!("{text:?}"),
+        Err(_) => {
+            let hex: Vec<String> = bytes.iter().take(32).map(|b| format!("{b:02x}")).collect();
+            format!(
+                "[binary] {}{}",
+                hex.join(" "),
+                if bytes.len() > 32 { " ..." } else { "" }
+            )
+        }
     }
 }
 

@@ -34,6 +34,7 @@ struct Args {
     sweep: bool,
     dirs: bool,
     files: Option<String>,
+    transport: Option<antinode_ble::Transport>,
 }
 
 /// Parse call parameters as JSON, or as comma-separated `key=value` pairs.
@@ -139,6 +140,7 @@ fn parse_args() -> Result<Args, String> {
         sweep: false,
         dirs: false,
         files: None,
+        transport: None,
     };
     let mut argv = std::env::args().skip(1).peekable();
     while let Some(arg) = argv.next() {
@@ -170,6 +172,14 @@ fn parse_args() -> Result<Args, String> {
                 args.call.push((m, p));
             }
             "--sweep" => args.sweep = true,
+            "--transport" => {
+                let v = argv.next().ok_or("--transport needs llt or llt2")?;
+                args.transport = Some(match v.as_str() {
+                    "llt" => antinode_ble::Transport::Llt,
+                    "llt2" => antinode_ble::Transport::Llt2,
+                    other => return Err(format!("unknown transport: {other}")),
+                });
+            }
             "--dirs" => args.dirs = true,
             "--files" => {
                 args.files = Some(argv.next().ok_or("--files needs a directory")?);
@@ -206,6 +216,7 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
                      Read-only: it only ever asks about files that do not exist.
   --files <dir>      guess filenames inside a directory, using the same oracle.
                      Read-only. e.g. --files /Calibration
+  --transport <t>    force llt or llt2 rather than choosing by firmware version
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -266,10 +277,18 @@ async fn run(args: Args) -> Result<(), TransportError> {
         guitar.set_write_len(len);
     }
     guitar.set_trace(args.trace || args.diagnose);
+    if let Some(t) = args.transport {
+        guitar.set_transport(t);
+        println!("      transport FORCED to {t:?}");
+    }
     println!("      connected; GATT surface has both expected characteristics");
     println!(
         "      write length in use: {} (assumed, not negotiated)",
         guitar.write_len()
+    );
+    println!(
+        "      transport: {:?} (chosen from the firmware versions in the banner)",
+        guitar.transport()
     );
 
     // Everything past this point runs inside `session`, so a failure still
@@ -947,6 +966,12 @@ fn advice(e: &TransportError) -> &'static str {
     match e {
         TransportError::NotFound(_) => {
             "Nothing in range looked like a guitar.\n\
+             \n\
+             Most likely it is simply asleep. These power down on their own, and a\n\
+             session of repeated connections drains the battery noticeably. Tap the\n\
+             knob and check the screen lights before reading further.\n\
+             \n\
+             If it is definitely awake:\n\
              The scan is unfiltered and matches on the service UUID *or* the name, so\n\
              this is not a scan-filter false negative. Check, in order:\n\
              - Is it powered on, and is USB mode OFF? USB mode makes it a mass-storage\n\
