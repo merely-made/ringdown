@@ -267,6 +267,7 @@ pub struct Guitar {
     notifications: std::pin::Pin<Box<dyn Stream<Item = btleplug::api::ValueNotification> + Send>>,
     ids: RequestIds,
     write_len: usize,
+    request_timeout: Duration,
     trace: bool,
     transport: Transport,
 }
@@ -363,6 +364,7 @@ impl Guitar {
 
         Ok(Guitar {
             write_len: ASSUMED_WRITE_LEN,
+            request_timeout: REQUEST_TIMEOUT,
             trace: false,
             transport,
             peripheral,
@@ -414,6 +416,16 @@ impl Guitar {
         };
         self.peripheral.write(&self.request, bytes, kind).await?;
         Ok(())
+    }
+
+    /// How long to wait for a reply.
+    ///
+    /// The default matches the vendor client's, but that is evidence about
+    /// what the app tolerates rather than about how slow the device can be: a
+    /// large read may have to gather state from flash and compress it before
+    /// it can answer at all.
+    pub fn set_request_timeout(&mut self, timeout: Duration) {
+        self.request_timeout = timeout;
     }
 
     /// Which transport this connection is using.
@@ -619,12 +631,12 @@ impl Guitar {
     }
 
     async fn await_response(&mut self, id: i64) -> Result<Response, TransportError> {
-        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
         let mut heard = Vec::new();
         loop {
             let Some(bytes) = self.next_notification(deadline).await else {
                 return Err(TransportError::Timeout {
-                    waited: REQUEST_TIMEOUT,
+                    waited: self.request_timeout,
                     heard,
                 });
             };

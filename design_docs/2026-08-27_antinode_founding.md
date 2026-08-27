@@ -603,6 +603,63 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H17 — LLT2 CONFIRMED AGAINST HARDWARE. The codec is correct.** With the
+transport wired in and selected from the banner, a compressed exchange
+succeeded end to end:
+
+```
+-> 18 bytes                       (GetStatus, compressed from 55)
+<- 141 bytes  [compressed] {"jsonrpc":"2.0","id":1,"result":{...}}
+```
+
+The firmware **understood our compressed request** and **answered compressed**,
+and our decoder read its reply back into correct JSON. That validates, in one
+exchange: the 163-entry dictionary including all ten reconstructed entries, the
+nibble packing and alignment, the BCD number encoding, the frame-free
+short-message path, and the decision to write `decode` as the inverse of
+`encode` rather than as a copy of the vendor's off-by-one decoder. F17 moves
+from careful reading to confirmed fact.
+
+It also settles a question F11 left open: **the device mirrors the encoding.**
+Asked in plain JSON it answered in plain JSON (170 bytes); asked compressed it
+answered compressed (141 bytes for the same content). The client's choice of
+transport determines the reply's.
+
+**H18 — `ReadConfig` wedges the firmware's RPC handler.** This is the sharpest
+negative result of the project and it cost several runs to see clearly.
+
+`ReadConfig` returns nothing — not at the 10-second default, not at 60 seconds,
+over LLT2 as over LLT, with zero notifications of any kind. That alone would
+merely be unsupported. What makes it worse is what happens next: **every
+subsequent request is met with silence too, including `GetStatus`, and the
+condition survives disconnecting and reconnecting.** Only a power cycle clears
+it.
+
+Demonstrated deliberately: `GetStatus` succeeded, `ReadConfig` was attempted,
+and a plain `GetStatus` on a fresh connection minutes later timed out with
+nothing heard. The instrument had been answering happily immediately before.
+
+Consequences worth stating plainly:
+
+- **The transport is not the problem, and Phase 2.5 was not the blocker it
+  looked like.** LLT2 works (H17). `ReadConfig` fails for a reason inside the
+  firmware, not in the framing or the codec.
+- **Each attempt costs a power cycle**, so this is expensive to probe and
+  should not be retried casually.
+- **It poisons unrelated diagnosis.** A wedged handler presents as some *other*
+  request failing, which is precisely the misleading symptom the probe's own
+  advice was written to warn about — and it was, several messages before anyone
+  realised it was describing the situation at hand.
+- The vendor's app presumably avoids this, either by never calling `ReadConfig`
+  on this firmware or by calling it in a context not yet reproduced. Worth
+  checking what the app does immediately before its own `readConfig`.
+
+Open, and not to be guessed at: whether some parameter, ordering, or prior call
+makes `ReadConfig` safe; and whether `SetConfig`/`SaveConfig` share the fault.
+Testing those means more power cycles and, for the writing ones, accepting a
+change to the instrument — a decision for the owner rather than a curiosity to
+satisfy.
+
 **F17 — LLT2 fully specified and implemented.** Both halves are now in the
 core: `compress` (the JSON codec) and `llt2` (the binary framing).
 

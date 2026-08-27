@@ -35,6 +35,7 @@ struct Args {
     dirs: bool,
     files: Option<String>,
     transport: Option<antinode_ble::Transport>,
+    timeout: Option<u64>,
 }
 
 /// Parse call parameters as JSON, or as comma-separated `key=value` pairs.
@@ -141,6 +142,7 @@ fn parse_args() -> Result<Args, String> {
         dirs: false,
         files: None,
         transport: None,
+        timeout: None,
     };
     let mut argv = std::env::args().skip(1).peekable();
     while let Some(arg) = argv.next() {
@@ -180,6 +182,10 @@ fn parse_args() -> Result<Args, String> {
                     other => return Err(format!("unknown transport: {other}")),
                 });
             }
+            "--timeout" => {
+                let v = argv.next().ok_or("--timeout needs seconds")?;
+                args.timeout = Some(v.parse().map_err(|_| "--timeout isn't a number")?);
+            }
             "--dirs" => args.dirs = true,
             "--files" => {
                 args.files = Some(argv.next().ok_or("--files needs a directory")?);
@@ -217,6 +223,7 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
   --files <dir>      guess filenames inside a directory, using the same oracle.
                      Read-only. e.g. --files /Calibration
   --transport <t>    force llt or llt2 rather than choosing by firmware version
+  --timeout <secs>   how long to wait for a reply (default 10)
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -277,6 +284,10 @@ async fn run(args: Args) -> Result<(), TransportError> {
         guitar.set_write_len(len);
     }
     guitar.set_trace(args.trace || args.diagnose);
+    if let Some(secs) = args.timeout {
+        guitar.set_request_timeout(Duration::from_secs(secs));
+        println!("      reply timeout set to {secs}s");
+    }
     if let Some(t) = args.transport {
         guitar.set_transport(t);
         println!("      transport FORCED to {t:?}");
@@ -997,10 +1008,11 @@ fn advice(e: &TransportError) -> &'static str {
              (hold the knob two seconds, then tap it) and try again — a stuck transfer\n\
              shows up as some *other* request failing, which is a misleading symptom.\n\
              \n\
-             If it has never worked, the request may need LLT2: this firmware selects a\n\
-             compressed, binary-framed transport for anything large, and antinode only\n\
-             speaks the older one. Small requests work either way, which is why\n\
-             GetStatus is not evidence that a bigger read will.\n\
+             Note that ReadConfig is known to wedge this firmware's RPC handler: after\n\
+             one, every later request is met with silence until the guitar is power-\n\
+             cycled, GetStatus included. If a ReadConfig was attempted at any point in\n\
+             this session, that is almost certainly what you are looking at, and the\n\
+             failing request is a victim rather than a cause.\n\
              \n\
              Otherwise, run:\n\
              \n\
