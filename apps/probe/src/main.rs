@@ -29,7 +29,22 @@ struct Args {
     config_out: Option<String>,
     diagnose: bool,
     trace: bool,
-    bank: Option<i64>,
+    bank: Option<(i64, i64)>,
+}
+
+/// Accept either `3` or `0-7`.
+fn parse_range(text: &str) -> Result<(i64, i64), String> {
+    if let Some((a, b)) = text.split_once('-') {
+        let first: i64 = a.trim().parse().map_err(|_| "range start isn't a number")?;
+        let last: i64 = b.trim().parse().map_err(|_| "range end isn't a number")?;
+        if last < first {
+            return Err(String::from("range end is before its start"));
+        }
+        Ok((first, last))
+    } else {
+        let n: i64 = text.trim().parse().map_err(|_| "--bank isn't a number")?;
+        Ok((n, n))
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -54,8 +69,10 @@ fn parse_args() -> Result<Args, String> {
                 args.write_len = Some(v.parse().map_err(|_| "--write-len isn't a number")?);
             }
             "--bank" => {
-                let v = argv.next().ok_or("--bank needs a number")?;
-                args.bank = Some(v.parse().map_err(|_| "--bank isn't a number")?);
+                let v = argv
+                    .next()
+                    .ok_or("--bank needs a number or range like 0-7")?;
+                args.bank = Some(parse_range(&v)?);
             }
             "--diagnose" => args.diagnose = true,
             "--trace" => args.trace = true,
@@ -78,8 +95,7 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
   --scan-secs <n>    how long to scan (default 10)
   --write-len <n>    override the assumed write length (default 514)
   --config <path>    also run ReadConfig and write the result here
-  --bank <n>         also run ReadBank for one bank (a smaller read than
-                     ReadConfig, so it may fit where the whole config does not)
+  --bank <n|a-b>     also run ReadBank for one bank or a range (e.g. 0-7)
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -199,26 +215,55 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
     println!("      firmware STM    {}", status.version_stm);
     println!("\n      cpu id and STM version are what a firmware assessment would start from.");
 
-    if let Some(n) = args.bank {
+    if let Some((first, last)) = args.bank {
         println!(
             "
-[extra] ReadBank {n} — a smaller read than the whole config..."
+[extra] ReadBank {first}..={last}"
         );
-        match guitar
-            .call(
-                antinode::rpc::Method::ReadBank,
-                antinode::rpc::params::bank(n),
-            )
-            .await
-        {
-            Ok(v) => {
-                println!("        ANSWERED:");
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&v).unwrap_or_else(|_| String::from("?"))
-                );
+        println!("        the device returns a *string* per bank, and the vendor's own app");
+        println!("        never calls this, so its semantics are ours to establish.");
+        let mut answered = 0;
+        let mut nonempty = 0;
+        for n in first..=last {
+            match guitar
+                .call(
+                    antinode::rpc::Method::ReadBank,
+                    antinode::rpc::params::bank(n),
+                )
+                .await
+            {
+                Ok(v) => {
+                    answered += 1;
+                    let rendered = match v.as_str() {
+                        Some("") => String::from("(empty string)"),
+                        Some(text) => {
+                            nonempty += 1;
+                            format!("{} chars: {text}", text.len())
+                        }
+                        None => {
+                            nonempty += 1;
+                            format!(
+                                "not a string: {}",
+                                serde_json::to_string(&v).unwrap_or_default()
+                            )
+                        }
+                    };
+                    println!("        bank {n}: {rendered}");
+                }
+                Err(e) => println!("        bank {n}: {e}"),
             }
-            Err(e) => println!("        {e}"),
+        }
+        println!(
+            "
+        {answered} of {} answered, {nonempty} with content.",
+            last - first + 1
+        );
+        if answered > 0 && nonempty == 0 {
+            println!(
+                "        Every bank answered but all were empty, so ReadBank is reachable
+                         and either the banks are genuinely empty or their content lives
+                         somewhere other than this result. Reachability is what this tested."
+            );
         }
     }
 

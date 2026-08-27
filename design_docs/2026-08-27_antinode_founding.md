@@ -602,6 +602,27 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H7 — `ReadBank` answers; the transport split is by size, not by method.**
+After the connection-leak fix and a power cycle, `ReadBank 0` **replied**
+rather than timing out — so a second method beyond `GetStatus` is reachable over
+the plain transport. Its `result` was an empty string.
+
+Two things that clarifies. First, `readBank` is declared
+`readBank(int) -> String` in `DeviceCommunicator`, so a string result is its
+normal shape, not a degenerate one. Second, **the vendor's own app never calls
+it**: every `readBanks` in the UI reads Firebase or local storage, never the
+device. So `ReadBank` joins the nineteen dictionary methods as firmware surface
+the app leaves unused, and its semantics are ours to establish rather than to
+copy. An empty result may mean the bank is empty, that banks are 1-indexed, or
+that bank content is fetched some other way (the dictionary's `PrintBank`,
+`DumpFile`, `file`, `offset`, `size` keys suggest a file path).
+
+The useful conclusion is about the transport, and it corrects a guess in H6:
+the LLT2 boundary is **by message size, not by method**. `ReadBank` is a small
+enough exchange to work uncompressed; `ReadConfig` is not. That means Phase 2.5
+is required for the large reads specifically, not for "the methods the app
+doesn't use".
+
 **H6 — `ReadConfig` is silent, and it identified a second transport we had not
 implemented at all.** `GetStatus` round-trips, but `ReadConfig` — same request
 size, much larger reply — returns nothing whatever in 10s. The MTU explanation
