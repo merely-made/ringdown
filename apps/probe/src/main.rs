@@ -31,6 +31,83 @@ struct Args {
     trace: bool,
     bank: Option<(i64, i64)>,
     call: Vec<(String, String)>,
+    sweep: bool,
+}
+
+/// Parse call parameters as JSON, or as comma-separated `key=value` pairs.
+///
+/// The `key=value` form exists because PowerShell strips the quotes out of
+/// `{"bank_num":0}` before the program ever sees it, leaving `{bank_num:0}`,
+/// which is not JSON. Rather than teach every user a shell-quoting rule,
+/// accept a form that needs no quotes at all.
+fn parse_params(text: &str) -> Result<serde_json::Value, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    if text.starts_with('{') {
+        // Tolerate the unquoted-key shape PowerShell produces.
+        return serde_json::from_str(text).or_else(|_| {
+            let repaired = repair_unquoted_keys(text);
+            serde_json::from_str(&repaired)
+                .map_err(|e| format!("not JSON ({e}); try key=value form instead, e.g. bank_num=0"))
+        });
+    }
+    let mut map = serde_json::Map::new();
+    for pair in text.split(',') {
+        let (k, v) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("`{pair}` is not key=value"))?;
+        let value = if let Ok(n) = v.trim().parse::<i64>() {
+            serde_json::json!(n)
+        } else if let Ok(f) = v.trim().parse::<f64>() {
+            serde_json::json!(f)
+        } else if v.trim() == "true" || v.trim() == "false" {
+            serde_json::json!(v.trim() == "true")
+        } else {
+            serde_json::json!(v.trim())
+        };
+        map.insert(k.trim().to_string(), value);
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+/// Put quotes back around bare object keys, undoing what a shell removed.
+fn repair_unquoted_keys(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            in_string = !in_string;
+            out.push(c);
+            continue;
+        }
+        if !in_string && (c.is_ascii_alphabetic() || c == '_') {
+            let mut word = String::new();
+            word.push(c);
+            while let Some(&n) = chars.peek() {
+                if n.is_ascii_alphanumeric() || n == '_' {
+                    word.push(n);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            let is_key = matches!(chars.peek(), Some(':'));
+            let literal = matches!(word.as_str(), "true" | "false" | "null");
+            if is_key && !literal {
+                out.push('"');
+                out.push_str(&word);
+                out.push('"');
+            } else {
+                out.push_str(&word);
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Accept either `3` or `0-7`.
@@ -57,8 +134,9 @@ fn parse_args() -> Result<Args, String> {
         trace: false,
         bank: None,
         call: Vec::new(),
+        sweep: false,
     };
-    let mut argv = std::env::args().skip(1);
+    let mut argv = std::env::args().skip(1).peekable();
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "--scan-secs" => {
@@ -78,9 +156,16 @@ fn parse_args() -> Result<Args, String> {
             }
             "--call" => {
                 let m = argv.next().ok_or("--call needs a method name")?;
-                let p = argv.next().unwrap_or_else(|| String::from("{}"));
+                // Only take a following argument as params if it could be
+                // params. Swallowing the next flag turns a valid command line
+                // into a baffling error about an argument the user did write.
+                let p = match argv.peek() {
+                    Some(next) if !next.starts_with("--") => argv.next().unwrap(),
+                    _ => String::from("{}"),
+                };
                 args.call.push((m, p));
             }
+            "--sweep" => args.sweep = true,
             "--diagnose" => args.diagnose = true,
             "--trace" => args.trace = true,
             "--config" => {
@@ -106,6 +191,9 @@ antinode-probe — confirm the recovered HyVibe protocol against a real guitar
   --call <m> [json]  call any method by wire name, including ones antinode has
                      no variant for (e.g. --call PrintBank '{\"bank_num\":0}').
                      Repeatable. Anything arriving after the reply is reported.
+  --sweep            ask the device which of the dictionary's undocumented
+                     methods actually exist. Query-shaped methods only — the
+                     ones that would change the instrument are never swept.
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -119,7 +207,11 @@ async fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\n\n{HELP}");
+            // Deliberately not the full help. It ends with advice about the
+            // guitar's connection state, which reads as a diagnosis of the
+            // instrument when the only thing wrong is the command line.
+            eprintln!("error: {e}");
+            eprintln!("Nothing was sent to the guitar. Run --help for usage.");
             std::process::exit(2);
         }
     };
@@ -283,18 +375,23 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
         }
     }
 
+    if args.sweep {
+        sweep_methods(guitar).await;
+    }
+
     for (method, params_json) in &args.call {
         println!(
             "
 [extra] {method} — an arbitrary method call"
         );
-        let params: serde_json::Value = match serde_json::from_str(params_json) {
+        let params = match parse_params(params_json) {
             Ok(v) => v,
             Err(e) => {
-                println!("        params aren't valid JSON: {e}");
+                println!("        bad params: {e}");
                 continue;
             }
         };
+        println!("        params: {params}");
         match guitar.call_named(method, params).await {
             Ok(v) => {
                 println!(
@@ -327,6 +424,85 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
     }
 
     Ok(())
+}
+
+/// Methods the compressor's dictionary names but the vendor's app never calls,
+/// restricted to those whose names promise only to *report* something.
+///
+/// The mutating remainder — `ActivateSpkFilter`, `BypassEffect`, `DumpFile`,
+/// `LaunchCalibration`, `PullFbk`, `SetGainPreamp`, `SetPhaseInv`,
+/// `SetSpeakerBiquads`, `StartAnalysis`, `StartRendering`, `StartTuner`,
+/// `StopRendering`, `StopTuner` — is deliberately absent. Sweeping those would
+/// mean firing thirteen state-changing commands with guessed parameters at
+/// someone's instrument to satisfy curiosity. They are one `--call` away when
+/// there is a reason to want one.
+const QUERY_METHODS: &[&str] = &[
+    "BTcheck",
+    "GetAnalysis",
+    "GetLastRecordingName",
+    "GetLevels",
+    "PrintBank",
+    "ReadMetronome",
+];
+
+/// Ask the device which methods it implements.
+///
+/// The keyword dictionary proves the firmware knows a string; it does not prove
+/// there is a method behind it. The device settles that itself — an unknown
+/// method comes back as error 4, "Method not found", which makes this a real
+/// membership test rather than a guess.
+async fn sweep_methods(guitar: &mut Guitar) {
+    println!(
+        "
+[extra] method sweep — which undocumented methods exist?"
+    );
+    println!("        query-shaped methods only; nothing here changes the instrument.");
+
+    let mut exists = Vec::new();
+    let mut missing = Vec::new();
+
+    for name in QUERY_METHODS {
+        match guitar.call_named(name, serde_json::json!({})).await {
+            Ok(v) => {
+                println!(
+                    "        {name}: EXISTS — {}",
+                    serde_json::to_string(&v).unwrap_or_default()
+                );
+                exists.push(*name);
+            }
+            Err(TransportError::Rpc(antinode::rpc::RpcError::Device(e))) => {
+                // Code 4 is the device's "Method not found"; any other code
+                // means the method is real and merely objected to the call.
+                if e.code == 4.0 {
+                    println!("        {name}: not implemented");
+                    missing.push(*name);
+                } else {
+                    println!(
+                        "        {name}: EXISTS — but rejected: {} ({})",
+                        e.message, e.code
+                    );
+                    exists.push(*name);
+                }
+            }
+            Err(e) => println!("        {name}: {e}"),
+        }
+        let trailing = guitar.drain(Duration::from_millis(400)).await;
+        for line in &trailing {
+            println!("          + trailing: {line}");
+        }
+    }
+
+    println!(
+        "
+        {} implemented, {} absent.",
+        exists.len(),
+        missing.len()
+    );
+    if !exists.is_empty() {
+        println!("        implemented: {}", exists.join(", "));
+        println!("        A method that exists but rejected an empty call wants parameters;");
+        println!("        its error message is usually the best clue about which.");
+    }
 }
 
 /// Try each candidate request encoding and report which the device answers.

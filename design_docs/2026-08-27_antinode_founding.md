@@ -602,6 +602,29 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H8 — The device reports unknown methods, which makes the dictionary
+testable.** `GetLevels` — one of the nineteen names the keyword dictionary
+leaked — returned a clean JSON-RPC error: **code 4, "Method not found error"**.
+
+Two conclusions, one narrow and one broad. Narrowly, `GetLevels` is not
+implemented in this firmware (STM 1.2.3 / ESP 1.3.0) despite being in the
+dictionary, which confirms the caveat recorded with F15: a dictionary entry
+proves the firmware knows the *string*, not that a method stands behind it.
+Broadly, error 4 is a **membership test** — the device will say which names are
+real, so the whole undocumented surface can be enumerated rather than guessed
+at. `antinode-probe --sweep` does this.
+
+The sweep is restricted to query-shaped methods (`BTcheck`, `GetAnalysis`,
+`GetLastRecordingName`, `GetLevels`, `PrintBank`, `ReadMetronome`). The
+thirteen mutating ones are deliberately excluded: enumerating them would mean
+firing state-changing commands with guessed parameters at a working instrument
+to satisfy curiosity, and `LaunchCalibration` alone would re-run the
+instrument's self-calibration. They remain one `--call` away when there is a
+reason to want one.
+
+Also note the error path itself is now hardware-verified: a device error
+decodes, carries its code and message, and surfaces as `RpcError::Device`.
+
 **H7 — `ReadBank` answers; the transport split is by size, not by method.**
 After the connection-leak fix and a power cycle, `ReadBank 0` **replied**
 rather than timing out — so a second method beyond `GetStatus` is reachable over
