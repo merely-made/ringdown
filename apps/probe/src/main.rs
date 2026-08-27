@@ -142,6 +142,23 @@ async fn run(args: Args) -> Result<(), TransportError> {
         guitar.write_len()
     );
 
+    // Everything past this point runs inside `session`, so a failure still
+    // releases the connection. The instrument accepts one client at a time, so
+    // a leaked connection does not merely waste a handle: it locks out the next
+    // run, and the symptom is some *other* request appearing to fail. An early
+    // `?` here would make this probe the cause of the next probe's failure.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let outcome = session(&mut guitar, &args).await;
+
+    let _ = guitar.disconnect().await;
+    println!("\ndisconnected.");
+    outcome
+}
+
+/// The work done while connected. The caller always disconnects afterwards,
+/// whatever this returns.
+async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError> {
     println!("\n[3/4] reading the version banner (a GATT read, before any RPC)...");
     match guitar.banner().await {
         Ok(banner) => {
@@ -164,7 +181,7 @@ async fn run(args: Args) -> Result<(), TransportError> {
     }
 
     if args.diagnose {
-        return diagnose(&mut guitar).await;
+        return diagnose(guitar).await;
     }
 
     println!("\n[4/4] GetStatus — the control run...");
@@ -205,20 +222,18 @@ async fn run(args: Args) -> Result<(), TransportError> {
         }
     }
 
-    if let Some(path) = args.config_out {
+    if let Some(path) = args.config_out.as_deref() {
         println!("\n[extra] ReadConfig — the live effect catalog...");
         println!("        this is the test of how an over-MTU response arrives (Finding F11).");
         let config = guitar.read_config().await?;
         let pretty = serde_json::to_string_pretty(&config)
             .unwrap_or_else(|_| String::from("<unserializable>"));
-        match std::fs::write(&path, &pretty) {
+        match std::fs::write(path, &pretty) {
             Ok(()) => println!("        wrote {} bytes to {path}", pretty.len()),
             Err(e) => println!("        could not write {path}: {e}"),
         }
     }
 
-    let _ = guitar.disconnect().await;
-    println!("\ndisconnected.");
     Ok(())
 }
 
@@ -339,7 +354,6 @@ The one that answered names the assumption to correct in Findings."
         );
     }
 
-    let _ = guitar.disconnect().await;
     Ok(())
 }
 
@@ -369,8 +383,19 @@ fn advice(e: &TransportError) -> &'static str {
         }
         TransportError::Timeout { heard, .. } if heard.is_empty() => {
             "The write succeeded and the device said nothing at all.\n\
-             Since it is silent rather than disagreeing, suspect the channel before the\n\
-             message format. Run:\n\
+             \n\
+             If this request worked on an earlier run, suspect device state before the\n\
+             code: a previous run that ended in an error may have left the instrument\n\
+             mid-transfer, and it serves one client at a time. Power-cycle the guitar\n\
+             (hold the knob two seconds, then tap it) and try again — a stuck transfer\n\
+             shows up as some *other* request failing, which is a misleading symptom.\n\
+             \n\
+             If it has never worked, the request may need LLT2: this firmware selects a\n\
+             compressed, binary-framed transport for anything large, and antinode only\n\
+             speaks the older one. Small requests work either way, which is why\n\
+             GetStatus is not evidence that a bigger read will.\n\
+             \n\
+             Otherwise, run:\n\
              \n\
                  cargo run -p antinode-probe -- --diagnose\n\
              \n\
