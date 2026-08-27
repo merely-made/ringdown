@@ -602,6 +602,44 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H12 — RETRACTED 2026-08-27, same day, by the instrument's owner.** The
+claim below was that the device holds no recordings. It holds **31 loops**.
+
+The retraction matters more than the claim did, because the reasoning was
+checkable and wrong. 7.634 GB free at 99.49% gives a total of 7.673 GB and
+**39 MB used**. I read 39 MB as "firmware and system only" without ever asking
+what 31 loops would weigh: 39 MB over 31 files is **1.26 MB each**, which at
+44.1 kHz/16-bit is roughly 7–15 seconds of audio per loop — precisely what a
+looper produces. The number was consistent with the loops all along. A large
+card makes real content look like rounding error, and "99.5% free" is not
+"empty" unless you check the magnitude of what you expect to find.
+
+**What this leaves standing, and what it changes:**
+
+- The banks may still be genuinely empty; that is a separate question from
+  recordings and untouched by this retraction.
+- The `GetFileInfo` failures now have a much better explanation.
+  `GetLastRecordingName` returns `/Loops/loop0032.wav` while 31 loops exist, so
+  the returned name is most likely the **next** name rather than the last
+  written one — an off-by-one in naming, not in the protocol. Every path form
+  failed because every path form named a file that does not exist yet.
+- The immediate test is to ask for a file that does exist: `loop0031.wav`,
+  or any lower number.
+
+**The methodological note below survives its own counterexample**, and is
+sharpened by it. It warned against explaining emptiness with elaborate theories
+instead of checking the simple thing — and was itself an elaborate theory built
+on an unchecked number, written in the same breath as the warning. Five times
+in one session a general claim was drawn from a single unverified reading. The
+pattern is not carelessness about any particular fact; it is that in reverse
+engineering every fact arrives as a sample of one, and the discipline has to be
+applied to one's own conclusions at exactly the moment they feel most
+explanatory.
+
+---
+
+*Original claim, retained for the record:*
+
 **H12 — We have been testing read APIs against an empty instrument.** All
 three path forms — `/Loops/loop0032.wav`, `loop0032.wav`,
 `Loops/loop0032.wav` — fail identically with "open file error", which rules
