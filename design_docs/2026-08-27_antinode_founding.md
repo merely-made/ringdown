@@ -602,6 +602,50 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H14 — `DumpFile` works. The bulk read path is open, and it does not need
+LLT2.** Parameters are `name`, `offset`, `size`; the result is an **uppercase
+hex string** of the file's bytes.
+
+```
+DumpFile name=/Loops/loop0031.wav offset=0 size=64
+-> "5249464654500B00574156454A554E4B28000000487956696265206C6F6F70..."
+```
+
+Decoded, those 64 bytes are a real WAV header:
+
+```
+RIFF | size 741460 | WAVE | JUNK (40) | "HyVibe loop file"
+     | 1, 200, 7, 8, 4, 0 | fmt ...
+```
+
+**The cross-check is exact.** The RIFF payload size of 741,460 plus the 8-byte
+header is **741,468** — precisely the size `GetFileInfo` reported for the same
+path. Two independent methods, agreeing byte-for-byte on a real file. That is
+the strongest single confirmation the protocol map has received.
+
+The `JUNK` chunk is a vendor extension labelled **"HyVibe loop file"** carrying
+six 32-bit values: `1, 200, 7, 8, 4, 0`. Unidentified, but `8` and `4` are
+plausible time-signature and bar counts and `1` a format version. Anyone
+reading these files later will want this decoded; it is not needed to read the
+audio, since the chunk is `JUNK` and standard readers skip it.
+
+**Parameter naming is not uniform across the file methods.** `name` works;
+`file` returns **code 2, "OPEN FILE ERROR"** — note both a different code *and*
+different capitalisation from the code 4 "open file error" seen earlier. Two
+distinct error paths exist in the firmware, plausibly one per processor, and
+neither code nor message casing can be assumed shared between them. This
+reinforces H10: classify on message content, and do not treat any code as
+canonical.
+
+**What this changes for the plan.** A bulk read path that returns file bytes
+through ordinary RPC replies means large data can leave the instrument
+**without LLT2**. If the configuration exists as a file, `ReadConfig` may be
+avoidable entirely. Phase 2.5 is therefore no longer certainly on the critical
+path — it depends on whether a config file exists and can be named. Throughput
+is the obvious cost: the reply is hex, so two characters per byte, and a
+514-byte write length caps a single call at roughly 200 bytes of file data.
+Fine for a configuration, slow for a 741 KB loop.
+
 **H13 — The file mechanism works, and the naming off-by-one is confirmed.**
 
 ```

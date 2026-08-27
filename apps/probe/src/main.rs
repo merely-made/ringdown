@@ -398,6 +398,9 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
                     "        ANSWERED: {}",
                     serde_json::to_string(&v).unwrap_or_default()
                 );
+                if let Some(dump) = render_maybe_hex(&v) {
+                    print!("{dump}");
+                }
             }
             Err(e) => println!("        {e}"),
         }
@@ -424,6 +427,51 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
     }
 
     Ok(())
+}
+
+/// Render a hex-string reply as bytes, since some methods answer that way.
+///
+/// `DumpFile` returns file contents as an uppercase hex string. Printed raw it
+/// is an unreadable wall; decoded, a WAV header or a JSON fragment identifies
+/// itself at a glance. Anything that is not plausibly hex is left alone.
+fn render_maybe_hex(value: &serde_json::Value) -> Option<String> {
+    let text = value.as_str()?;
+    if text.len() < 8 || text.len() % 2 != 0 || !text.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let bytes: Vec<u8> = (0..text.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+        .collect();
+    if bytes.len() * 2 != text.len() {
+        return None;
+    }
+
+    let mut out = format!(
+        "        decoded {} bytes:
+",
+        bytes.len()
+    );
+    for (row, chunk) in bytes.chunks(16).enumerate() {
+        let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+        let ascii: String = chunk
+            .iter()
+            .map(|&b| {
+                if (0x20..0x7f).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        out.push_str(&format!(
+            "          {:04x}  {:<47}  |{ascii}|
+",
+            row * 16,
+            hex.join(" ")
+        ));
+    }
+    Some(out)
 }
 
 /// Methods the compressor's dictionary names but the vendor's app never calls,
