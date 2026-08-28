@@ -1113,8 +1113,14 @@ and `PrintBank` returning `true`: they are commands that *produce* something
 elsewhere, not queries that return it. Testable with `GetFileInfo`.
 
 `ReadMetronome` returning `{"bpm":60,"den":8,"num":5}` is live instrument state
-— 60 bpm in 5/8 — and confirms the metronome parameter names from F13 against
-hardware.
+and confirms the metronome parameter *names* from F13 against hardware.
+
+**Corrected 2026-08-27: this is not "5/8".** Reading `den` as a time-signature
+denominator was an interpretation, and hardware later disproved it — the
+instrument's own display read **5/4** both before and after `den` was changed
+from 8 to 4. `num` is the numerator and round-trips; `den` is something else
+and does not. See woodshed's smart-instrument plan for the full account, and
+do not write `den`.
 
 **H8 — The device reports unknown methods, which makes the dictionary
 testable.** `GetLevels` — one of the nineteen names the keyword dictionary
