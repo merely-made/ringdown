@@ -646,11 +646,14 @@ pub mod params {
     /// Absent values are omitted rather than sent as `null`, so the instrument
     /// keeps whatever it had for them.
     ///
-    /// **`den` does nothing.** The instrument accepts it, returns `true`, and
-    /// leaves the denominator where it was — confirmed over four writes in
-    /// both directions, including to values its own menu offers. `bpm` and
-    /// `num` apply normally, and `ReadMetronome` reports the true state, so
-    /// the denominator is readable but only settable on the guitar itself.
+    /// **`den` is not writable over the protocol, and the vendor's app cannot
+    /// write it either.** With `bpm` present the call returns `true` and drops
+    /// `den`; sent alone as `{"den":n}` it returns `false` and changes nothing,
+    /// because the handler requires `bpm`. No call shape writes the field. The
+    /// vendor app sends `{"den":n}` alone from its denominator picker, gets the
+    /// same `false`, and discards it — its picker drives the *phone's* click
+    /// track, not the guitar. `bpm` and `num` write normally; `ReadMetronome`
+    /// reports the true denominator, which is settable only on the instrument.
     pub fn metronome(bpm: i64, num: Option<i64>, den: Option<i64>, bars: Option<i64>) -> Value {
         object(&[
             ("bpm", Some(json!(bpm))),

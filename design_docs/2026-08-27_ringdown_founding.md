@@ -690,6 +690,31 @@ protocol and settable only on the instrument itself. Woodshed still sends only
 `bpm` and `num`, now because a `den` write does nothing rather than because
 anything is unknown.
 
+**Why it does nothing — traced to the vendor's source, then confirmed on
+hardware (2026-08-28).** `UpdateMetronome`'s handler requires `bpm`: sent
+`{"den":8}` alone the instrument returns **`false`** and changes nothing, and
+sent `{"bpm":…,"num":…,"den":…}` it returns `true` and applies everything *but*
+`den`. No call shape writes the field.
+
+The decisive part is that **the vendor's app cannot write it either.** Its code
+sends each metronome field individually — `setBpm` → `{"bpm":x}`, `setNumerator`
+→ `{"num":x}`, `setDenominator` → `{"den":x}` — never bundled. The denominator
+call therefore hits exactly the `bpm`-less path that returns `false`, and
+`MetronomeModel.setDenominator$1` **discards the boolean result** and returns
+`Unit`. The app never learns the write failed. Its denominator picker (values
+`{1,2,4,8,16}` — no 32) drives the phone's own click player via
+`metronomePlayer.start(bpm, num, den)`; it was never a guitar write that worked.
+
+So `den` over BLE is read-only for everyone, vendor included. The guitar tracks
+its denominator (front panel sets it, `ReadMetronome` reads it, loop headers
+record it) but exposes no working write path for it. A firmware gap the vendor
+shipped around by ignoring a `false`.
+
+This also retired the last theory that dressed it as our bug — "we bundled the
+fields; send `den` alone like the app does." Tested: `{"den":8}` alone returned
+`false`. The app's own shape fails the same way. The finding is not about how
+ringdown frames the call; it is about the firmware.
+
 **H22 — The loop header is a time signature, a bar count and a completion flag,
 read across the whole library.** (2026-08-28, `probe --index` against
 H2-CC340 — 31 headers, one round trip each, about a minute of instrument time.)
