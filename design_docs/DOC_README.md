@@ -1,13 +1,13 @@
-# Antinode — documentation index
+# Ringdown — documentation index
 
 `DOC_README.md` is the sole canonical index for this repo (DOC_POLICY §6). Read
 this first, then `DOC_POLICY.md`, before starting work.
 
-## What antinode is
+## What ringdown is
 
 An independent desktop client for the HyVibe smart guitar, speaking the
 instrument's own JSON-RPC-over-Bluetooth protocol directly. The protocol was
-reverse-engineered for interoperability from the vendor's Android app; antinode
+reverse-engineered for interoperability from the vendor's Android app; ringdown
 reimplements it independently from the recovered facts and interfaces. Woodshed
 is the first consumer. Structural template is retinue (sans-io core, thin I/O
 shell, receipt-driven validation).
@@ -40,8 +40,8 @@ shell, receipt-driven validation).
 
 | Doc | What's there |
 |---|---|
-| [`DOC_POLICY.md`](DOC_POLICY.md) | Documentation governance (canonical core + antinode addendum). |
-| [`2026-08-27_antinode_founding.md`](2026-08-27_antinode_founding.md) | Founding plan: the decision, crate layout, phases with done-conditions, and the full recovered protocol map (Findings). |
+| [`DOC_POLICY.md`](DOC_POLICY.md) | Documentation governance (canonical core + ringdown addendum). |
+| [`2026-08-27_ringdown_founding.md`](2026-08-27_ringdown_founding.md) | Founding plan: the decision, crate layout, phases with done-conditions, and the full recovered protocol map (Findings). |
 
 `PROJECT_DESCRIPTION.md` (maintainer-owned, DOC_POLICY §7) is not yet written;
 the founding plan carries the product intent until it is.

@@ -121,9 +121,9 @@ Read `DOC_README.md` first, then this policy, before starting work. Any durable
 working principle learned during a session is promoted into `DOC_README.md`'s
 working-principles section in that same session.
 
-## Local addendum — Antinode
+## Local addendum — Ringdown
 
-Antinode was founded 2026-08-27 as an interoperability project: an independent
+Ringdown was founded 2026-08-27 as an interoperability project: an independent
 client (and, if ever pursued, alternative firmware) for a smart guitar whose
 protocol was recovered by static analysis of the vendor's own Android app.
 Three rules follow from that origin and hold here specifically:
@@ -144,7 +144,7 @@ Three rules follow from that origin and hold here specifically:
 - **Say "reverse-engineered", not "clean-room".** These are different claims and
   the stronger one is not ours. True clean-room requires a personnel split — one
   party reads the original and writes a spec, a *separate* party implements from
-  that spec having never seen the original. Antinode's protocol map was written
+  that spec having never seen the original. Ringdown's protocol map was written
   by the same party that read the decompiled app, so the work is ordinary
   reverse engineering for interoperability. That is a well-supported footing on
   its own and needs no embellishment; claiming clean-room without the split

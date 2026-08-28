@@ -29,7 +29,7 @@
 //! # Provenance
 //!
 //! Recovered by static analysis; unconfirmed against hardware until the Phase 1
-//! control run. See `design_docs/2026-08-27_antinode_founding.md`, Findings F3
+//! control run. See `design_docs/2026-08-27_ringdown_founding.md`, Findings F3
 //! and F5.
 
 use alloc::{string::String, vec::Vec};

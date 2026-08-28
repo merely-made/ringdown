@@ -3,37 +3,6 @@
 version = 4
 
 [[package]]
-name = "antinode"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "antinode-ble"
-version = "0.0.1"
-dependencies = [
- "antinode",
- "btleplug",
- "futures",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "antinode-probe"
-version = "0.0.1"
-dependencies = [
- "antinode",
- "antinode-ble",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,6 +507,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "ringdown"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ringdown-ble"
+version = "0.0.1"
+dependencies = [
+ "btleplug",
+ "futures",
+ "ringdown",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "ringdown-probe"
+version = "0.0.1"
+dependencies = [
+ "ringdown",
+ "ringdown-ble",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

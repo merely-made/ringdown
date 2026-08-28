@@ -1,15 +1,15 @@
-//! Bluetooth transport for [`antinode`].
+//! Bluetooth transport for [`ringdown`].
 //!
 //! This is the I/O half of the sans-io split: it owns the GATT connection and
 //! the timing, and defers every question about what the bytes mean to the
 //! protocol core.
 //!
 //! ```no_run
-//! # async fn run() -> Result<(), antinode_ble::TransportError> {
-//! use antinode::rpc::{Method, params};
+//! # async fn run() -> Result<(), ringdown_ble::TransportError> {
+//! use ringdown::rpc::{Method, params};
 //!
-//! let found = antinode_ble::discover(std::time::Duration::from_secs(10)).await?;
-//! let mut guitar = antinode_ble::Guitar::connect(&found[0]).await?;
+//! let found = ringdown_ble::discover(std::time::Duration::from_secs(10)).await?;
+//! let mut guitar = ringdown_ble::Guitar::connect(&found[0]).await?;
 //! println!("{:?}", guitar.banner().await?);
 //! println!("{:?}", guitar.status().await?);
 //! # Ok(())
@@ -18,17 +18,17 @@
 
 use std::time::Duration;
 
-use antinode::{
-    handshake::Banner,
-    llt::{self, Ack, LltCode},
-    llt2,
-    rpc::{self, Method, RequestIds, Response, Status},
-};
 use btleplug::api::{
     Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
 };
 use btleplug::platform::{Manager, Peripheral};
 use futures::{Stream, StreamExt};
+use ringdown::{
+    handshake::Banner,
+    llt::{self, Ack, LltCode},
+    llt2,
+    rpc::{self, Method, RequestIds, Response, Status},
+};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -157,16 +157,16 @@ fn service_uuid() -> Uuid {
     // The constants are strings in the core so it can stay dependency-light;
     // they are fixed and valid, so a parse failure here would be a build-time
     // typo rather than a runtime condition.
-    Uuid::parse_str(antinode::GUITAR_SERVICE).expect("service uuid constant is malformed")
+    Uuid::parse_str(ringdown::GUITAR_SERVICE).expect("service uuid constant is malformed")
 }
 
 fn request_uuid() -> Uuid {
-    Uuid::parse_str(antinode::GUITAR_CHARACTERISTIC_REQUEST)
+    Uuid::parse_str(ringdown::GUITAR_CHARACTERISTIC_REQUEST)
         .expect("request characteristic uuid constant is malformed")
 }
 
 fn response_uuid() -> Uuid {
-    Uuid::parse_str(antinode::GUITAR_CHARACTERISTIC_RESPONSE)
+    Uuid::parse_str(ringdown::GUITAR_CHARACTERISTIC_RESPONSE)
         .expect("response characteristic uuid constant is malformed")
 }
 
@@ -464,7 +464,7 @@ impl Guitar {
         self.call_named(method.wire_name(), params).await
     }
 
-    /// Call a method by its wire name, including one antinode has no
+    /// Call a method by its wire name, including one ringdown has no
     /// [`Method`] variant for.
     ///
     /// The compressor's keyword dictionary names methods the vendor's own app
@@ -477,7 +477,7 @@ impl Guitar {
     ) -> Result<Value, TransportError> {
         let id = self.ids.next_id();
         let encoded = serde_json::to_string(&serde_json::json!({
-            "jsonrpc": antinode::rpc::JSONRPC_VERSION,
+            "jsonrpc": ringdown::rpc::JSONRPC_VERSION,
             "id": id,
             "method": method,
             "params": params,
@@ -644,7 +644,7 @@ impl Guitar {
             // A reply may arrive compressed or as plain JSON. Try decompressing
             // first: the start-nibble check makes that a cheap, unambiguous
             // test rather than a guess, and plain JSON simply fails it.
-            let candidate = match antinode::compress::decode(&bytes) {
+            let candidate = match ringdown::compress::decode(&bytes) {
                 Some(json) => Some(json),
                 None => core::str::from_utf8(&bytes).ok().map(String::from),
             };
@@ -696,7 +696,7 @@ impl Guitar {
 /// compressed frame reads as JSON rather than as a wall of replacement
 /// characters.
 fn render(bytes: &[u8]) -> String {
-    if let Some(json) = antinode::compress::decode(bytes) {
+    if let Some(json) = ringdown::compress::decode(bytes) {
         return format!("[compressed] {json}");
     }
     match core::str::from_utf8(bytes) {

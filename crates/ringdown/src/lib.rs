@@ -32,11 +32,11 @@
 //! application. As of 2026-08-27 the GATT surface, the version banner, and a
 //! full `GetStatus` round-trip are **confirmed against a real instrument**;
 //! the rest remains a hypothesis until exercised. See
-//! `design_docs/2026-08-27_antinode_founding.md`.
+//! `design_docs/2026-08-27_ringdown_founding.md`.
 //!
 //! # Interoperability
 //!
-//! Antinode is an independent implementation, not affiliated with or endorsed
+//! Ringdown is an independent implementation, not affiliated with or endorsed
 //! by HyVibe. It contains no vendor code: only the interface facts needed to
 //! talk to an instrument its owner already has.
 
@@ -86,8 +86,8 @@ pub const DEFAULT_WRITE_LEN: usize = 20;
 /// Usable write length for a negotiated MTU.
 ///
 /// ```
-/// assert_eq!(antinode::write_len_for_mtu(517), 514);
-/// assert_eq!(antinode::write_len_for_mtu(23), 20);
+/// assert_eq!(ringdown::write_len_for_mtu(517), 514);
+/// assert_eq!(ringdown::write_len_for_mtu(23), 20);
 /// ```
 pub fn write_len_for_mtu(mtu: u16) -> usize {
     mtu.saturating_sub(ATT_WRITE_OVERHEAD) as usize

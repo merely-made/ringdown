@@ -1,10 +1,10 @@
-# Antinode — an independent client for the HyVibe smart guitar
+# Ringdown — an independent client for the HyVibe smart guitar
 
 **Date:** 2026-08-27
 **Status:** in progress. **Phase 1 is complete** as of 2026-08-27: the
 protocol is hardware-verified, both transports are implemented, and the one
 method that resisted (`ReadConfig`) is established as broken in the firmware
-rather than blocked by anything antinode does — its contents reachable by
+rather than blocked by anything ringdown does — its contents reachable by
 composing methods that work (H19). Detail below.
 
 Phase 0 landed 2026-08-27. **Phase 1 record:** the GATT surface (H1), the version banner (H2), and a full `GetStatus`
@@ -22,21 +22,29 @@ configuration; every exchange so far has been a read.
 The HyVibe system turns an acoustic guitar into its own amplifier, multi-effect
 processor, looper, and speaker, with the DSP running on hardware inside the
 instrument. The only way to configure it is the vendor's iOS/Android app.
-**Antinode is an independent desktop client** that speaks the guitar's own
+**Ringdown is an independent desktop client** that speaks the guitar's own
 Bluetooth protocol directly, so the instrument can be configured — eventually
 past what the phone app exposes — from a computer, and so its capability is
 owned rather than rented from an app that could disappear.
 
-The name is a luthier's word: the **antinode** is the point of maximum
-displacement on a standing wave. HyVibe's actual mechanism is active vibration
-control of the guitar's top plate, and plate antinodes are what a luthier maps
-when voicing a top. The name carries the mechanism, not a resemblance to it —
-which is the bar this workspace sets for a product-tier name. crates.io was
-verified free (API + sparse index) on 2026-08-27.
+**Ringdown** is how a resonating system decays once it stops being driven — the
+tail of a struck string or a rung body. The name carries the mechanism rather
+than resembling it, which is the bar this workspace sets for a product-tier
+name: this instrument's whole trick is controlling how long its body keeps
+sounding, and `SustainKiller` is ringdown control by another name. Verified
+free on crates.io (API + sparse index) on 2026-08-27.
+
+**Renamed from `antinode` on 2026-08-27**, before the first push. `antinode`
+named the same physics correctly — the aliquot divisions of a vibrating string
+— but read as "anti-Node" in a software context and said nothing about what the
+crate does. `antinode` 0.0.1 remains claimed and unused. The alternatives are
+recorded in the naming ledger; `luthier` was the clearest candidate and was
+refused deliberately, reserved along with the guitar-part words for software
+about the craft of building instruments rather than talking to one.
 
 **Scope of the name.** "HyVibe" is the vendor's trademark and appears in this
-repo only as prose describing what antinode interoperates with — never in a
-crate name, per the expression boundary in `DOC_POLICY.md`. Antinode is not
+repo only as prose describing what ringdown interoperates with — never in a
+crate name, per the expression boundary in `DOC_POLICY.md`. Ringdown is not
 affiliated with or endorsed by HyVibe.
 
 ---
@@ -53,7 +61,7 @@ reasoning:
   outside the protocol repo rather than fusing app and protocol.
 - **Woodshed is the first consumer, not the owner.** Woodshed already has the
   metronome, MIDI clock, looper, live-input recording, tuner, and latency
-  calibration that this instrument exposes over the wire. It consumes antinode
+  calibration that this instrument exposes over the wire. It consumes ringdown
   as a git dependency for the UI (the same way woodshed consumes
   `genet-host-api` from genet). The two are siblings, not parent and child.
 - **The firmware option wants a home of its own.** If the project ever reaches
@@ -65,7 +73,7 @@ The structural template is **retinue**, which solves a structurally identical
 problem for LoRa radios: a sans-io protocol core ("pure functions over bytes,
 replayable against fixtures"), a thin I/O shell over it, `no_std` firmware
 crates on embassy + esp-hal, a serial-DFU flashing tool, and receipt-driven
-validation against a reference implementation. Antinode borrows that shape
+validation against a reference implementation. Ringdown borrows that shape
 directly. In particular, HyVibe's LLT chunking layer is the same class of thing
 as retinue's HDLC framing codec in `iface::hdlc` — a sans-io framer with a
 replayable fixture suite.
@@ -74,12 +82,12 @@ replayable fixture suite.
 
 ```
 crates/
-  antinode/          Sans-io protocol core. JSON-RPC 2.0 envelope, the LLT
+  ringdown/          Sans-io protocol core. JSON-RPC 2.0 envelope, the LLT
                      chunk/reassembly state machine, and the domain model
                      (Bank, Effect, Parameter, Equalizer, Status, …). No BLE,
                      no async runtime, no_std-capable. Publish-tier; the named
                      crate. Replayable against captured fixtures.
-  antinode-ble/      Transport shell: btleplug on desktop (Windows/macOS/Linux).
+  ringdown-ble/      Transport shell: btleplug on desktop (Windows/macOS/Linux).
                      The tokio side of "sans-io core, tokio shell". Plain
                      hyphenated support-crate name per the tier rule; likely
                      publish = false until it has an audience.
@@ -89,21 +97,21 @@ apps/
                      Plain descriptive name, settled in Phase 0. publish = false.
 ```
 
-Woodshed stays where it is and gains a dependency on `antinode` + `antinode-ble`
-plus a view surface — no antinode code lives in the woodshed tree.
+Woodshed stays where it is and gains a dependency on `ringdown` + `ringdown-ble`
+plus a view surface — no ringdown code lives in the woodshed tree.
 
 ---
 
 ## Non-goals (v1)
 
 - **No audio over Bluetooth.** The DSP is on the instrument; there is no audio
-  stream to carry. Antinode configures the guitar, it does not process its
+  stream to carry. Ringdown configures the guitar, it does not process its
   sound on the desktop. (Aux-jack audio routing on the guitar is configured via
   RPC, but the samples never touch the computer.)
 - **No file-transfer or firmware-upload paths in the client.** The protocol has
   `sendFile` / `.part` chunking machinery; it is out of scope for the client
   and deliberately left alone (§ Findings, "Gaps").
-- **No mobile client.** The protocol is identical from iOS, but antinode is a
+- **No mobile client.** The protocol is identical from iOS, but ringdown is a
   desktop project.
 - **Firmware is not a v1 goal.** It is Phase 4, gated behind its own
   assessment; see below.
@@ -118,15 +126,15 @@ plus a view surface — no antinode code lives in the woodshed tree.
 
 Done-conditions:
 
-- Repo exists at `repos/antinode` with `git init` and the doc scaffold
+- Repo exists at `repos/ringdown` with `git init` and the doc scaffold
   (`DOC_POLICY.md`, `DOC_README.md`, this plan). — **met 2026-08-27**
 - License chosen (Decision D1) and `LICENSE` added. — **met 2026-08-27**
   (MPL-2.0, byte-identical to retinue's copy)
-- Root workspace `Cargo.toml` with the `antinode` core crate stubbed. —
+- Root workspace `Cargo.toml` with the `ringdown` core crate stubbed. —
   **met 2026-08-27** (`cargo build` and `cargo package` both clean; the crate
   is `#![no_std]` and `#![forbid(unsafe_code)]` from the first commit, so the
   sans-io posture is enforced by the compiler rather than by intention)
-- **crates.io `antinode` 0.0.1 reservation published** (Decision D2). —
+- **crates.io `ringdown` 0.0.1 reservation published** (Decision D2). —
   **met 2026-08-27.** The ledger's heddle lesson is explicit: a banked winner
   unclaimed is a winner lost, and `coppice` (banked "clean" on 2026-07-30,
   actually taken since 2025-01) is the fresh reminder that the check and the
@@ -136,7 +144,7 @@ Done-conditions:
 
 ### Phase 1 — Protocol core and the live proof (the instrument that measures everything after it)
 
-**Feature target:** antinode connects to the actual guitar, reads its status
+**Feature target:** ringdown connects to the actual guitar, reads its status
 and its live effect catalog, and every static claim in Findings is confirmed or
 corrected against hardware.
 
@@ -162,7 +170,7 @@ Done-conditions:
   the typed `Status` result, device errors, an id allocator, and builders for
   every params shape in F13. The numeric-`jsonrpc` deviation (F12) is asserted
   by a test in both directions. 37 tests green.
-- **`antinode-ble` connects to the guitar over GATT**, negotiates MTU, writes
+- **`ringdown-ble` connects to the guitar over GATT**, negotiates MTU, writes
   to RX (`…4161`), subscribes to notifications on TX (`…4162`).
 - **The spike CLI issues `GetStatus` and prints** `device`, `cpuID`,
   `battLeft`, `versionESP`, and `versionSTM` from the real instrument. This is
@@ -186,7 +194,7 @@ Done-conditions:
 
 ### Phase 2 — Full configuration parity
 
-**Feature target:** everything the phone app can do, antinode can do, from the
+**Feature target:** everything the phone app can do, ringdown can do, from the
 desktop.
 
 Done-conditions:
@@ -201,13 +209,13 @@ Done-conditions:
 - **A round-trip receipt per command family:** `ReadBank` → mutate → write →
   `ReadBank` reflects the change, captured as a replayable receipt in the
   retinue discipline.
-- **Woodshed consumes antinode:** git dependency wired, one view surface that
+- **Woodshed consumes ringdown:** git dependency wired, one view surface that
   connects and switches banks, proving the sibling-consumer topology end to
   end.
 
 ### Phase 2.5 — LLT2 (inserted 2026-08-27, discovered by hardware)
 
-**Feature target:** antinode speaks the transport this firmware actually uses,
+**Feature target:** ringdown speaks the transport this firmware actually uses,
 so that any message larger than a single write works in both directions.
 
 Not optional and not deferrable: every large read (`ReadConfig`, `ReadBank`)
@@ -299,7 +307,7 @@ assessment; this section is the durable authoritative record.
 The app's own code splits three ways: `com.xsquad.*` is a generic BLE
 transport, `com.hyvibe.*` is the device protocol and domain model (the portable
 part, no Android deps in the protocol path), and `net.weeteam.hyvibe.*` is
-Android UI. Antinode reimplements the middle layer.
+Android UI. Ringdown reimplements the middle layer.
 
 **F1 — BLE surface** (`com.hyvibe.adapters.BLEConstantsKt`):
 
@@ -400,11 +408,11 @@ carries:
 
 JSON-RPC 2.0 §4 requires `"jsonrpc": "2.0"` as a **string**. This device does
 not implement that. Any client built on a conforming JSON-RPC library will emit
-the string form and must be made to emit a number instead. Antinode matches the
+the string form and must be made to emit a number instead. Ringdown matches the
 device, and says so at [`rpc::JSONRPC_VERSION`] so nobody later "fixes" it.
 
 Related: request ids are `int` outbound but the **response** envelope types
-`id` as a *float* (`RPCResponse`, and likewise `RPCError.code`). Antinode
+`id` as a *float* (`RPCResponse`, and likewise `RPCError.code`). Ringdown
 parses ids as `f64` and narrows, so `3` and `3.0` are the same id and a
 fractional id matches nothing.
 
@@ -454,7 +462,7 @@ read of the response characteristic returns one of two plain-text forms:
 - `@version <esp>\n` — older firmware, ESP only; the vendor's client then
   **assumes** an STM version of `1.2.2` rather than reading one.
 
-This is distinct from, and earlier than, the `GetVersion` RPC method. Antinode
+This is distinct from, and earlier than, the `GetVersion` RPC method. Ringdown
 parses both forms and flags whether the STM version was reported or assumed
 (`handshake::Banner::stm_was_implied`), because an inherited assumption should
 not be indistinguishable from a device-reported fact.
@@ -466,7 +474,7 @@ straight out to listeners with **no buffering and no reassembly**. Consequences:
 - Every notification is expected to be a complete message on its own.
 - The same characteristic carries *both* LLT acknowledgements and complete
   JSON-RPC replies, so a client demultiplexes by shape — try to parse an ack,
-  and treat a non-match as a JSON-RPC reply rather than as an error. Antinode
+  and treat a non-match as a JSON-RPC reply rather than as an error. Ringdown
   does this in `llt::Ack::parse`, which returns `Option` for exactly this
   reason.
 - **Open question for Phase 1:** how a response larger than the MTU arrives,
@@ -532,7 +540,7 @@ What the teardown rules *out* as the cause, re-checked after the failure:
   `new RPCRequest(2.0f, getCounter(), GET_STATUS, MapsKt.emptyMap())`, and
   `RPCRequest.write$Self` encodes in the order jsonrpc, id, method, params, with
   `RPCRequestTypeSerializer.serialize` emitting `encodeString(getMethod())` — a
-  plain method name. Antinode's bytes match this.
+  plain method name. Ringdown's bytes match this.
 - No newline is appended to an unsplit message. `sendMessage` writes
   `toUtf8Bytes(m)` verbatim; only LLT frames get `\n`.
 - Replies do arrive as notifications: `onCharacteristicChanged` →
@@ -542,7 +550,7 @@ What the teardown rules *out* as the cause, re-checked after the failure:
 The vendor's client calls `requestMtu(517)` *before* any RPC and treats the
 result as load-bearing — `maxWriteLength` starts at 20 and is only raised in
 `onMtuChanged`. btleplug exposes no MTU API at all (see `ASSUMED_WRITE_LEN`), so
-antinode cannot make that request. A 54-byte `GetStatus` sent over an
+ringdown cannot make that request. A 54-byte `GetStatus` sent over an
 unnegotiated 23-byte MTU becomes a queued/long write, which the device's GATT
 server may not accept as a single attribute value. Note the corollary: at a
 20-byte write length the protocol is *unusable by construction*, since an LLT
@@ -553,7 +561,7 @@ first. Untested, and the next thing to test.
 every notification it did not recognise, so "the device said nothing" and "the
 device said something unexpected" were indistinguishable — the two failures have
 opposite fixes. `TransportError::Timeout` now carries everything overheard, and
-`antinode-probe --diagnose` tries each candidate encoding in turn (numeric vs
+`ringdown-probe --diagnose` tries each candidate encoding in turn (numeric vs
 string `jsonrpc`, with/without response, newline-terminated, no `params`) and
 first checks whether the device ever speaks unprompted at all.
 
@@ -576,7 +584,7 @@ Four corrections follow, and one of them retracts an earlier finding:
   identically — so the earlier claim that a spec-compliant client "is writing
   JSON-RPC at something that does not speak it" is **false**. What is actually
   fixed is the *reply*: it always arrives with `"jsonrpc":"2.0"` as a **string**.
-  The device is lenient inbound and conventional outbound. Antinode still sends
+  The device is lenient inbound and conventional outbound. Ringdown still sends
   the numeric form to match the vendor, but as the conservative choice rather
   than a necessity.
 - **That asymmetry was the whole bug.** `Response.version` was typed `f32`, a
@@ -597,7 +605,7 @@ model `R1C0M8`, so those are different identifiers. Replies are
 newline-terminated even when unsplit, though the vendor's client does not
 require that on the way out.
 
-**H5 — The guitar recognises antinode as an app client.** Mark observed the
+**H5 — The guitar recognises ringdown as an app client.** Mark observed the
 front-panel mobile-app indicator light up while the probe was connected — the
 same icon the manual documents for "mobile app connection". The instrument
 treats this as a legitimate app session, not merely an anonymous GATT
@@ -608,7 +616,7 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
-**H19 — `ReadConfig` is dead code in the vendor's app too, and antinode does
+**H19 — `ReadConfig` is dead code in the vendor's app too, and ringdown does
 not need it.** Two facts close H18.
 
 **The app never calls it.** `readConfig` appears nowhere in the application
@@ -640,7 +648,7 @@ recovers.
 | `aux_in_on`, `aux_in_drywet`, `aux_out_*` | — | **write-only** |
 
 So `ReadConfig` was never the gateway it appeared to be. It is one convenience
-call over a set of working ones, and antinode can assemble the same picture by
+call over a set of working ones, and ringdown can assemble the same picture by
 composing them. The genuine gap is narrow and worth naming precisely: **the
 equalizer and aux settings are write-only over this protocol.** `SetEQGain`,
 `SetEQBandGain`, `AuxIn`, `AuxInDryWet`, `AuxOut` and `AuxOutDryWet` all set;
@@ -823,7 +831,7 @@ This is the first claim this session to be established the right way round:
 hypothesis first, predictions written down before the run, a positive control
 and a negative control in the same run. Everything it says is worth more than
 the five corrected claims that preceded it, and it took one extra command to
-get. `antinode-probe --dirs` implements the sweep, with `/Loops` built in as
+get. `ringdown-probe --dirs` implements the sweep, with `/Loops` built in as
 the positive control and a loud refusal to report anything if that control
 fails.
 
@@ -1118,7 +1126,7 @@ dictionary, which confirms the caveat recorded with F15: a dictionary entry
 proves the firmware knows the *string*, not that a method stands behind it.
 Broadly, error 4 is a **membership test** — the device will say which names are
 real, so the whole undocumented surface can be enumerated rather than guessed
-at. `antinode-probe --sweep` does this.
+at. `ringdown-probe --sweep` does this.
 
 The sweep is restricted to query-shaped methods (`BTcheck`, `GetAnalysis`,
 `GetLastRecordingName`, `GetLevels`, `PrintBank`, `ReadMetronome`). The
@@ -1164,11 +1172,11 @@ transport by firmware version:
 ```java
 (stmVersion.isAtLeast(1,2,2) && espVersion.isAtLeast(1,2,2))
     ? new LLT2Manager(...)   // binary framing + compression
-    : new LLTManager(...)    // the one antinode implements
+    : new LLTManager(...)    // the one ringdown implements
 ```
 
 The reference instrument is STM 1.2.3 / ESP 1.3.0, so **it is an LLT2 device**.
-Antinode implements LLT1 only. Small uncompressed requests still work because
+Ringdown implements LLT1 only. Small uncompressed requests still work because
 short messages bypass framing on both paths and the device answers in kind — so
 `GetStatus` succeeding was never evidence that the transport was complete.
 
@@ -1300,18 +1308,18 @@ is the truth, whatever the APK said.
   retinue's copy. Two consequences worth recording, because they were not the
   reason for the choice but they fall out of it well:
   - **File-level copyleft is the right shape for a protocol crate.**
-    Improvements to antinode's own files stay open, while the crate can still
+    Improvements to ringdown's own files stay open, while the crate can still
     be linked into differently-licensed applications — including a proprietary
     one, which a hard copyleft would have foreclosed.
   - **It keeps the Phase 4 FX path open.** MPL-2.0 §3.3 permits distributing a
     Larger Work under a **Secondary License** (GPL 2.0+, LGPL 2.1+, AGPL 3.0+)
     so long as the covered files are not marked "Incompatible With Secondary
     Licenses" — and ours are not. So the GPLv2 tension flagged against Guitarix
-    (Phase 4) does **not** bite antinode: MPL-2.0 code may be combined into a
+    (Phase 4) does **not** bite ringdown: MPL-2.0 code may be combined into a
     GPL work. Had this gone MIT/Apache the answer would also have been fine;
     the point is that MPL-2.0 costs nothing here and is not the trap a
     copyleft-adjacent license might look like at first glance.
-- **D2 — Claim the crates.io name. DONE 2026-08-27.** `antinode` 0.0.1
+- **D2 — Claim the crates.io name. DONE 2026-08-27.** `ringdown` 0.0.1
   published to crates.io (MPL-2.0), confirmed live via the registry API
   independently of cargo's own success message. The name is claimed with a real
   publish rather than an intention, per the heddle lesson. Note for the ledger:
@@ -1335,7 +1343,7 @@ is the truth, whatever the APK said.
 ## Progress
 
 - **2026-08-27** — Repo founded: `git init`, `.gitignore`, `DOC_POLICY.md`
-  (canonical core + antinode addendum), `DOC_README.md`, this plan. Protocol
+  (canonical core + ringdown addendum), `DOC_README.md`, this plan. Protocol
   map recorded in Findings from the v1.1.2 APK teardown.
 - **2026-08-27** — Vendor licensing posture checked and recorded (Findings
   L1–L4): no EULA reaches the user, no anti-reverse-engineering clause exists,
@@ -1349,10 +1357,10 @@ is the truth, whatever the APK said.
   explains the distinction, and records how a genuine split could be arranged
   later from the Findings spec if one is ever wanted.
 - **2026-08-27** — D1 decided (MPL-2.0). `LICENSE` installed, workspace and
-  `crates/antinode` stub created; `cargo build` and `cargo package` clean.
+  `crates/ringdown` stub created; `cargo build` and `cargo package` clean.
 - **2026-08-27 — PHASE 0 LANDED.** Initial commit on `main` (branch renamed
   from git's `master` default to match the family's four other repos).
-  `antinode` 0.0.1 published to crates.io under MPL-2.0 and confirmed live via
+  `ringdown` 0.0.1 published to crates.io under MPL-2.0 and confirmed live via
   the registry API.
 - **2026-08-27 — Phase 1 transport layer landed** (the half that needs no
   hardware). `llt` (framing, chunking, ack parsing) and `handshake` (the

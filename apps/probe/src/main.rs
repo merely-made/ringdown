@@ -1,6 +1,6 @@
 //! The Phase 1 control run.
 //!
-//! Everything antinode knows about the protocol was read out of a decompiled
+//! Everything ringdown knows about the protocol was read out of a decompiled
 //! application, which makes it a hypothesis. This is the experiment that tests
 //! it: connect to a real guitar, read its version banner, ask for its status,
 //! and print what came back next to what was predicted.
@@ -13,15 +13,15 @@
 //! Usage:
 //!
 //! ```text
-//! antinode-probe                       scan, connect, banner + status
-//! antinode-probe --config out.json     also dump the live effect catalog
-//! antinode-probe --write-len 244       override the assumed write length
-//! antinode-probe --scan-secs 20        scan for longer
+//! ringdown-probe                       scan, connect, banner + status
+//! ringdown-probe --config out.json     also dump the live effect catalog
+//! ringdown-probe --write-len 244       override the assumed write length
+//! ringdown-probe --scan-secs 20        scan for longer
 //! ```
 
 use std::time::Duration;
 
-use antinode_ble::{Guitar, MatchedBy, TransportError, discover};
+use ringdown_ble::{Guitar, MatchedBy, TransportError, discover};
 
 struct Args {
     scan: Duration,
@@ -34,7 +34,7 @@ struct Args {
     sweep: bool,
     dirs: bool,
     files: Option<String>,
-    transport: Option<antinode_ble::Transport>,
+    transport: Option<ringdown_ble::Transport>,
     timeout: Option<u64>,
 }
 
@@ -177,8 +177,8 @@ fn parse_args() -> Result<Args, String> {
             "--transport" => {
                 let v = argv.next().ok_or("--transport needs llt or llt2")?;
                 args.transport = Some(match v.as_str() {
-                    "llt" => antinode_ble::Transport::Llt,
-                    "llt2" => antinode_ble::Transport::Llt2,
+                    "llt" => ringdown_ble::Transport::Llt,
+                    "llt2" => ringdown_ble::Transport::Llt2,
                     other => return Err(format!("unknown transport: {other}")),
                 });
             }
@@ -206,13 +206,13 @@ fn parse_args() -> Result<Args, String> {
 }
 
 const HELP: &str = "\
-antinode-probe — confirm the recovered HyVibe protocol against a real guitar
+ringdown-probe — confirm the recovered HyVibe protocol against a real guitar
 
   --scan-secs <n>    how long to scan (default 10)
   --write-len <n>    override the assumed write length (default 514)
   --config <path>    also run ReadConfig and write the result here
   --bank <n|a-b>     also run ReadBank for one bank or a range (e.g. 0-7)
-  --call <m> [json]  call any method by wire name, including ones antinode has
+  --call <m> [json]  call any method by wire name, including ones ringdown has
                      no variant for (e.g. --call PrintBank '{\"bank_num\":0}').
                      Repeatable. Anything arriving after the reply is reported.
   --sweep            ask the device which of the dictionary's undocumented
@@ -254,11 +254,11 @@ async fn main() {
 }
 
 async fn run(args: Args) -> Result<(), TransportError> {
-    println!("antinode probe — Phase 1 control run");
+    println!("ringdown probe — Phase 1 control run");
     println!("everything below is predicted from static analysis until it answers\n");
 
     println!("[1/4] scanning {:?}...", args.scan);
-    println!("      looking for service {}", antinode::GUITAR_SERVICE);
+    println!("      looking for service {}", ringdown::GUITAR_SERVICE);
     println!("      or a device named like the System Menu's BT ID (e.g. H2-SE614)");
     let found = discover(args.scan).await?;
     for (i, f) in found.iter().enumerate() {
@@ -371,8 +371,8 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
         for n in first..=last {
             match guitar
                 .call(
-                    antinode::rpc::Method::ReadBank,
-                    antinode::rpc::params::bank(n),
+                    ringdown::rpc::Method::ReadBank,
+                    ringdown::rpc::params::bank(n),
                 )
                 .await
             {
@@ -556,7 +556,7 @@ async fn probe_files(guitar: &mut Guitar, dir: &str) {
                     );
                     hits.push(name);
                 }
-                Err(TransportError::Rpc(antinode::rpc::RpcError::Device(e))) => {
+                Err(TransportError::Rpc(ringdown::rpc::RpcError::Device(e))) => {
                     if e.code == DIR_EXISTS {
                         saw_dir = true;
                     } else if e.code != DIR_MISSING {
@@ -652,7 +652,7 @@ const DIR_CANDIDATES: &[&str] = &[
 
 /// A filename chosen to be absent everywhere, so the probe only ever asks about
 /// files that do not exist and never touches real content.
-const ABSENT_FILE: &str = "zzz_antinode_probe_absent.tmp";
+const ABSENT_FILE: &str = "zzz_ringdown_probe_absent.tmp";
 
 /// Map the filesystem by asking about files that are not there.
 ///
@@ -683,7 +683,7 @@ async fn probe_directories(guitar: &mut Guitar) {
             .call_named("GetFileInfo", serde_json::json!({ "name": path }))
             .await
         {
-            Err(TransportError::Rpc(antinode::rpc::RpcError::Device(e))) => {
+            Err(TransportError::Rpc(ringdown::rpc::RpcError::Device(e))) => {
                 if e.code == DIR_EXISTS {
                     if *dir == "/Loops" {
                         control_ok = true;
@@ -814,7 +814,7 @@ async fn sweep_methods(guitar: &mut Guitar) {
                 );
                 exists.push(*name);
             }
-            Err(TransportError::Rpc(antinode::rpc::RpcError::Device(e))) => {
+            Err(TransportError::Rpc(ringdown::rpc::RpcError::Device(e))) => {
                 // Code 4 is the device's "Method not found"; any other code
                 // means the method is real and merely objected to the call.
                 if e.code == 4.0 {
@@ -991,7 +991,7 @@ fn advice(e: &TransportError) -> &'static str {
              - Is it paired as a Bluetooth *speaker* in the OS? That is Bluetooth Classic\n\
                audio, a different radio path from the app's BLE control link. Unpair it.\n\
              - Check the System Menu for the BT ID (e.g. H2-SE614). If the name does not\n\
-               start with H2- and does not contain 'hyvibe', tell antinode what to match."
+               start with H2- and does not contain 'hyvibe', tell ringdown what to match."
         }
         TransportError::NoAdapter => "No Bluetooth adapter. Is Bluetooth switched on?",
         TransportError::MissingCharacteristic(_) => {
@@ -1016,7 +1016,7 @@ fn advice(e: &TransportError) -> &'static str {
              \n\
              Otherwise, run:\n\
              \n\
-                 cargo run -p antinode-probe -- --diagnose\n\
+                 cargo run -p ringdown-probe -- --diagnose\n\
              \n\
              which tries each candidate encoding in turn and reports which, if any, it\n\
              answers — including whether it ever speaks unprompted at all."
@@ -1040,7 +1040,7 @@ fn advice(e: &TransportError) -> &'static str {
         TransportError::Bluetooth(_) => {
             "The Bluetooth stack refused the operation. If this was 'Not connected' during
              connect, the peripheral handle from the scan had gone stale, or the guitar
-             dropped between being seen and being connected to — antinode now retries
+             dropped between being seen and being connected to — ringdown now retries
              that a few times, so a failure here means it failed repeatedly.
              
              Check the guitar is awake, then try again. If Windows has gotten confused,

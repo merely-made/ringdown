@@ -1,5 +1,5 @@
 [package]
-name = "antinode-probe"
+name = "ringdown-probe"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
@@ -10,11 +10,11 @@ description = "Phase 1 control run: connect to a HyVibe guitar and confirm the r
 publish = false
 
 [[bin]]
-name = "antinode-probe"
+name = "ringdown-probe"
 path = "src/main.rs"
 
 [dependencies]
-antinode = { workspace = true }
-antinode-ble = { path = "../../crates/antinode-ble" }
+ringdown = { workspace = true }
+ringdown-ble = { path = "../../crates/ringdown-ble" }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

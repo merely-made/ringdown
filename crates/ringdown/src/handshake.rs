@@ -16,7 +16,7 @@
 //! # Provenance
 //!
 //! Recovered by static analysis; unconfirmed against hardware until the Phase 1
-//! control run. See `design_docs/2026-08-27_antinode_founding.md`, Findings F9
+//! control run. See `design_docs/2026-08-27_ringdown_founding.md`, Findings F9
 //! and F10.
 
 use core::fmt;

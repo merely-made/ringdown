@@ -12,7 +12,7 @@
 //!
 //! Recovered by static analysis and **confirmed against a real instrument on
 //! 2026-08-27**: `GetStatus` round-trips, and its reply is pinned as a test
-//! fixture. See `design_docs/2026-08-27_antinode_founding.md`, Findings F4,
+//! fixture. See `design_docs/2026-08-27_ringdown_founding.md`, Findings F4,
 //! F12, and H4.
 
 use alloc::{
@@ -22,11 +22,11 @@ use alloc::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The protocol version antinode sends, as a JSON number.
+/// The protocol version ringdown sends, as a JSON number.
 ///
 /// The vendor's client declares this field as a float and encodes it
 /// numerically, putting `"jsonrpc":2.0` on the wire where the JSON-RPC 2.0
-/// specification asks for the string `"2.0"`. Antinode sends what the vendor
+/// specification asks for the string `"2.0"`. Ringdown sends what the vendor
 /// sends.
 ///
 /// **Hardware correction (2026-08-27).** An earlier reading of this treated the
