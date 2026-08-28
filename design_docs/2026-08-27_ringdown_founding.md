@@ -649,9 +649,9 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
-**H23 — `UpdateMetronome` silently ignores `den`. `ReadMetronome` was always
-right.** (2026-08-28, against H2-CC340, with the owner reading the instrument's
-own display at each step.)
+**H23 — PARTIALLY SUPERSEDED by H24: the `ReadMetronome` half stands, the
+"ignores `den`" half was ringdown's own serialization.** (2026-08-28, against
+H2-CC340, with the owner reading the instrument's own display at each step.)
 
 Run properly this time: the owner set a deliberately unusual signature, the
 wire was read, a write was made, and the wire *and* the display were both read
@@ -685,35 +685,63 @@ evidence about the moment it was taken. Two readings separated by a change are
 two different experiments, and treating them as one manufactured a firmware
 mystery that cost several sessions.
 
-**What stands:** `den` is the time signature's denominator, readable over the
-protocol and settable only on the instrument itself. Woodshed still sends only
-`bpm` and `num`, now because a `den` write does nothing rather than because
-anything is unknown.
+**SUPERSEDED by H24 below: `den` *is* writable, and every conclusion in this
+finding past the read-path confirmation was an artifact of ringdown's own
+serialization.** The table above is real data, but each of those writes was
+sent with alphabetized keys, which is the very thing that made `den` inert.
+"Read-only for everyone, vendor included" was declared here and was wrong; the
+owner disproved it with the app in a minute. Kept as recorded because the
+retraction is the instructive part.
 
-**Why it does nothing — traced to the vendor's source, then confirmed on
-hardware (2026-08-28).** `UpdateMetronome`'s handler requires `bpm`: sent
-`{"den":8}` alone the instrument returns **`false`** and changes nothing, and
-sent `{"bpm":…,"num":…,"den":…}` it returns `true` and applies everything *but*
-`den`. No call shape writes the field.
+**H24 — `den` writes over BLE. Two bugs stood in the way: one ours, one the
+vendor's.** (2026-08-28, against H2-CC340; exhaustive value sweep, both
+transports, race-controlled with in-connection pauses, panel cross-checked by
+the owner throughout.)
 
-The decisive part is that **the vendor's app cannot write it either.** Its code
-sends each metronome field individually — `setBpm` → `{"bpm":x}`, `setNumerator`
-→ `{"num":x}`, `setDenominator` → `{"den":x}` — never bundled. The denominator
-call therefore hits exactly the `bpm`-less path that returns `false`, and
-`MetronomeModel.setDenominator$1` **discards the boolean result** and returns
-`Unit`. The app never learns the write failed. Its denominator picker (values
-`{1,2,4,8,16}` — no 32) drives the phone's own click player via
-`metronomePlayer.start(bpm, num, den)`; it was never a guitar write that worked.
+**Bug one — ringdown's.** serde_json's default map alphabetizes keys, so every
+params object this client had ever sent was reordered: `{bpm, den, num}`
+instead of the declaration order `{bpm, num, den}` the vendor's serializer
+emits. The firmware's parser is order-sensitive: **a `den` arriving before
+`num` is silently dropped** while the fields around it apply and the call
+returns `true`. Enabling `preserve_order` made `den` writable at once. The
+crate now pins declaration order with a test, and the Cargo.toml comment marks
+the feature load-bearing.
 
-So `den` over BLE is read-only for everyone, vendor included. The guitar tracks
-its denominator (front panel sets it, `ReadMetronome` reads it, loop headers
-record it) but exposes no working write path for it. A firmware gap the vendor
-shipped around by ignoring a `false`.
+**Bug two — the vendor's.** With order fixed, the acceptance set was mapped
+exhaustively: every value 1–32 written from a known-good baseline with a read
+between, plus 256 as a boundary probe.
 
-This also retired the last theory that dressed it as our bug — "we bundled the
-fields; send `den` alone like the app does." Tested: `{"den":8}` alone returned
-`false`. The app's own shape fails the same way. The finding is not about how
-ringdown frames the call; it is about the firmware.
+| sent | result |
+|---|---|
+| 1, 2, 4, 16 | **applies** |
+| every other value 1–32 | silently refused, `true` returned |
+| 256 | silently refused, `true` returned |
+
+**The firmware whitelists `{1, 2, 4, 16}` and silently drops the rest —
+including 8 and 32, which the instrument's own front panel offers.** The panel
+path sets all six of `{1,2,4,8,16,32}`; the RPC path accepts four. A table
+with a hole in it, shipped invisibly because the app layer discards every RPC
+result (`MetronomeModel` returns `Unit` without checking), so no one at the
+vendor was positioned to see a refusal.
+
+Ruled out along the way, each by one targeted write: value transforms (the one
+apparent "8 → 4" was a stale baseline — the owner's app test had moved the
+instrument between sessions), a settle race (a 5 s in-connection pause after a
+refused write changed nothing while `bpm` in the same message applied
+instantly), compound-meter gating (6/8 refused like 5/8), a `den > num` rule,
+LLT-vs-LLT2 encoding (plain-text refusals identical), and an
+exponent-is-power-of-two check (predicted 256 accepted; it was refused).
+
+Fields apply independently: a message with a refused `den` still applies its
+`bpm` and `num`. Sent without `bpm` entirely, the call returns `false` and
+changes nothing — the one honest error this handler produces.
+
+**Consequences.** Ringdown documents the whitelist at `params::metronome`.
+Woodshed may now offer denominator control for `{1,2,4,16}` if wanted — its
+current bpm+num-only posture is safe but no longer forced. And the field-order
+sensitivity is a standing hazard for *every* method: any params object this
+client sends must keep declaration order, which `preserve_order` plus the
+pinned test now guarantee.
 
 **H22 — The loop header is a time signature, a bar count and a completion flag,
 read across the whole library.** (2026-08-28, `probe --index` against
@@ -1332,8 +1360,8 @@ was never changed from 8 to 4 by anything sent here; the instrument was already
 at 4 by the time that was checked.
 
 `num` and `den` are both the time signature, and `ReadMetronome` reports both
-correctly. What does not work is *writing* `den`, which `UpdateMetronome`
-accepts and discards.
+correctly. Writing `den` works too, with the field order and value whitelist
+established in H24.
 
 **H8 — The device reports unknown methods, which makes the dictionary
 testable.** `GetLevels` — one of the nineteen names the keyword dictionary
@@ -1645,3 +1673,12 @@ is the truth, whatever the APK said.
     restore `den: 8` — two methods mishandling a settled field. Woodshed keeps
     refusing to write `den`, now for that reason rather than for not knowing
     what it means.
+- **2026-08-28 — `den` writes; two bugs found, one ours (H24).** The owner
+  disproved "read-only for everyone" with the vendor app in a minute, which
+  forced the real investigation. serde_json's alphabetized keys were dropping
+  `den` on the firmware's order-sensitive parser (`preserve_order` now enabled
+  and pinned by test), and with order fixed an exhaustive 1–32 + 256 sweep
+  showed the firmware whitelists `{1,2,4,16}` — silently refusing 8 and 32,
+  which its own panel offers. Race, transform, compound-meter, den>num,
+  transport-encoding and exponent-pow2 theories each killed by one targeted
+  write. `--call pause` added to the probe for in-connection settle tests.

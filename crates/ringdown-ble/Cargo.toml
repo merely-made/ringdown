@@ -16,7 +16,7 @@ path = "src/lib.rs"
 ringdown = { workspace = true }
 btleplug = "0.11"
 futures = "0.3"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
 uuid = "1"

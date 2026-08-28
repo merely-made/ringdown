@@ -18,4 +18,7 @@ path = "src/lib.rs"
 # Both are pulled without default features so the crate stays no_std; `alloc` is
 # required because JSON values are inherently heap-shaped.
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
-serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# preserve_order is load-bearing, not cosmetic: the instrument's JSON parser is
+# order-sensitive (a `den` arriving before `num` is silently dropped), and
+# serde_json's default BTreeMap alphabetizes keys. A test in rpc.rs pins this.
+serde_json = { version = "1", default-features = false, features = ["alloc", "preserve_order"] }

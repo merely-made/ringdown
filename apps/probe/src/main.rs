@@ -460,6 +460,16 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
     }
 
     for (method, params_json) in &args.call {
+        // Not a device method: `--call pause 5` waits five seconds before the
+        // next call, holding the connection. Exists to separate "the write did
+        // not apply" from "the write had not applied *yet*" — a distinction a
+        // back-to-back write/read cannot see.
+        if method == "pause" {
+            let secs: u64 = params_json.trim().parse().unwrap_or(3);
+            println!("\n[extra] pause — holding the connection {secs}s");
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            continue;
+        }
         println!(
             "
 [extra] {method} — an arbitrary method call"

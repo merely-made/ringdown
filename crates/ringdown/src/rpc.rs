@@ -492,11 +492,13 @@ const VALUE: &[ParamKey] = &[req("value")];
 /// reproduce every recording's duration, and confirmed by the instrument's
 /// owner for a known take. See [`crate::loopfile`].
 ///
-/// **`den` is accepted and ignored.** Four hardware writes moved it nowhere —
-/// up, down, and to values the instrument's own menu offers — while the call
-/// returned `true` every time. `bpm` and `num` both apply. Send `den` only if a
-/// later firmware starts honouring it; `ReadMetronome` reports it correctly, so
-/// a caller can always tell what the instrument is actually set to.
+/// **`den` writes, with two conditions** — the fields must be in declaration
+/// order (`bpm, num, den`; the parser drops a `den` that precedes `num`), and
+/// the value must be in the firmware's whitelist `{1, 2, 4, 16}`; 8 and 32
+/// exist on the instrument's panel but are silently refused over RPC. Sent
+/// without `bpm` the call returns `false` outright. See [`params::metronome`].
+/// `ReadMetronome` reports the field correctly, so a caller can always tell
+/// what the instrument is actually set to.
 const METRONOME: &[ParamKey] = &[req("bpm"), opt("num"), opt("den"), opt("bars")];
 
 const RECORDING: &[ParamKey] = &[req("free")];
@@ -646,14 +648,21 @@ pub mod params {
     /// Absent values are omitted rather than sent as `null`, so the instrument
     /// keeps whatever it had for them.
     ///
-    /// **`den` is not writable over the protocol, and the vendor's app cannot
-    /// write it either.** With `bpm` present the call returns `true` and drops
-    /// `den`; sent alone as `{"den":n}` it returns `false` and changes nothing,
-    /// because the handler requires `bpm`. No call shape writes the field. The
-    /// vendor app sends `{"den":n}` alone from its denominator picker, gets the
-    /// same `false`, and discards it — its picker drives the *phone's* click
-    /// track, not the guitar. `bpm` and `num` write normally; `ReadMetronome`
-    /// reports the true denominator, which is settable only on the instrument.
+    /// **Two hardware facts govern `den`** (mapped exhaustively 2026-08-28):
+    ///
+    /// 1. **Field order matters.** The firmware parser drops `den` when it
+    ///    arrives before `num`, which is exactly what serde_json's default
+    ///    BTreeMap produced by alphabetizing keys. This crate enables
+    ///    `preserve_order` so params serialize in declaration order
+    ///    (`bpm, num, den, bars`), and a test pins that.
+    /// 2. **The firmware whitelists `{1, 2, 4, 16}`.** Every other value
+    ///    1–32, plus 256, is silently dropped with a `true` reply — including
+    ///    8 and 32, which the instrument's own panel offers. A table with a
+    ///    hole in it, invisible to the vendor because their app discards every
+    ///    result.
+    ///
+    /// `bpm` and `num` write normally, each field applies independently, and
+    /// `ReadMetronome` always reports the true state.
     pub fn metronome(bpm: i64, num: Option<i64>, den: Option<i64>, bars: Option<i64>) -> Value {
         object(&[
             ("bpm", Some(json!(bpm))),
@@ -1119,6 +1128,26 @@ mod tests {
         // Present ones still travel.
         let full = params::metronome(96, Some(5), Some(8), Some(2));
         assert_eq!(full.as_object().unwrap().len(), 4);
+    }
+
+    /// Params must serialize in declaration order, because the firmware's
+    /// parser is order-sensitive: a `den` that arrives before `num` is
+    /// silently dropped (hardware, 2026-08-28). serde_json alphabetizes by
+    /// default — that exact behaviour hid the metronome denominator for a day
+    /// — so `preserve_order` is enabled in Cargo.toml and this test fails if
+    /// anyone "tidies" the feature away.
+    #[test]
+    fn metronome_params_keep_wire_order_not_alphabetical() {
+        let p = params::metronome(93, Some(6), Some(8), None);
+        let text = serde_json::to_string(&p).unwrap();
+        let pos = |k: &str| {
+            text.find(k)
+                .unwrap_or_else(|| panic!("{k} missing in {text}"))
+        };
+        assert!(
+            pos("bpm") < pos("num") && pos("num") < pos("den"),
+            "alphabetized params regressed: {text}"
+        );
     }
 
     /// The two reorder methods use different key names for the same idea. It
