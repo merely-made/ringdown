@@ -1483,3 +1483,21 @@ is the truth, whatever the APK said.
     vendor's client. Now matches their permissiveness.
   - The receive path discarded unrecognised notifications, making silence and
     an unexpected reply look identical. Timeouts now carry what was overheard.
+- **2026-08-28 — desk work, no instrument involved.** Two pieces, both closing
+  things that had been left open rather than opening anything new.
+  - **The loop header is decoded (H20).** `ringdown::loopfile` parses a
+    recording's WAV header and the vendor's `JUNK` chunk. `200` is the tempo and
+    `7 × 4 = 28` the length in beats, established against the audio's own
+    duration and confirmed to the byte once 2048-sample block rounding is
+    accounted for. Which of the two length fields counts bars is deliberately
+    *not* concluded — one file cannot separate them — and `probe --index` reads
+    every loop's header in one round trip each to collect what will.
+  - **Every method's params shape is bound (H21).** `rpc::param_shape` covers
+    all 32, checked against the `params::*` constructors by test. Doing it found
+    `"den": null` going out on every metronome write, contradicting the
+    invariant `woodshed-instrument` claimed for itself. Fixed.
+  - 15 + 6 new tests; 102 in `ringdown`, 3 in the probe; clippy and fmt clean.
+  - **Not yet reaching woodshed.** It takes ringdown as a git dependency, so
+    both changes need a push before its build sees them. The `woodshed-instrument`
+    test run on 2026-08-28 passed against the *pushed* ringdown and therefore
+    says nothing about either change.
