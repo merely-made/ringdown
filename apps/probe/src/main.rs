@@ -38,6 +38,7 @@ struct Args {
     timeout: Option<u64>,
     fetch: Option<String>,
     fetch_bytes: Option<usize>,
+    index: bool,
 }
 
 /// Parse call parameters as JSON, or as comma-separated `key=value` pairs.
@@ -147,6 +148,7 @@ fn parse_args() -> Result<Args, String> {
         timeout: None,
         fetch: None,
         fetch_bytes: None,
+        index: false,
     };
     let mut argv = std::env::args().skip(1).peekable();
     while let Some(arg) = argv.next() {
@@ -198,6 +200,7 @@ fn parse_args() -> Result<Args, String> {
                 args.fetch_bytes = Some(v.parse().map_err(|_| "--fetch-bytes isn't a number")?);
             }
             "--dirs" => args.dirs = true,
+            "--index" => args.index = true,
             "--files" => {
                 args.files = Some(argv.next().ok_or("--files needs a directory")?);
             }
@@ -240,6 +243,9 @@ ringdown-probe — confirm the recovered HyVibe protocol against a real guitar
                      device's own checksum.
   --fetch-bytes <n>  fetch only the first n bytes (skips the checksum, which
                      can only be verified over a whole file)
+  --index            list every loop with its tempo and length, by reading only
+                     each file's 92-byte header. Read-only, and cheap: a header
+                     is one round trip where a whole loop is ten minutes.
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -441,6 +447,10 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
         probe_directories(guitar).await;
     }
 
+    if args.index {
+        index_loops(guitar).await?;
+    }
+
     if let Some(target) = args.fetch.as_deref() {
         fetch_recording(guitar, target, args.fetch_bytes).await?;
     }
@@ -611,6 +621,164 @@ async fn probe_files(guitar: &mut Guitar, dir: &str) {
 /// doubles every byte, and one reply carries about two hundred bytes of file.
 /// A multi-megabyte loop is therefore minutes rather than seconds, which is
 /// why progress is reported rather than left to a silent wait.
+/// List every loop with its tempo, reading only each file's header.
+///
+/// The point is the cost. `DumpFile` takes an offset and a size, so a loop's
+/// metadata is one round trip of 92 bytes where its audio is roughly 3,700 round
+/// trips and ten minutes. Indexing a whole library is therefore seconds, and
+/// browsing by tempo is practical even though bulk retrieval is not.
+///
+/// It also settles an open question. Two of the header's six values multiply to
+/// the loop's length in beats, and one file cannot say which is bars and which
+/// is beats-per-bar. Several files can: the field that stays at 4 across loops
+/// in common time is the meter, and the one that moves is the bar count.
+async fn index_loops(guitar: &mut Guitar) -> Result<(), TransportError> {
+    println!(
+        "
+[extra] indexing loops by header"
+    );
+
+    let next = guitar.next_recording_name().await?;
+    let Some((stem, count, ext)) = split_numbered(&next) else {
+        println!("        could not read a loop number out of {next}");
+        return Ok(());
+    };
+    if count == 0 {
+        println!("        the device reports no recordings");
+        return Ok(());
+    }
+    println!("        device names the next loop {next}, so {count} exist at most");
+    println!();
+    println!("        file            dur     bpm  beats  raw values");
+
+    let mut seen: Vec<ringdown::loopfile::LoopMeta> = Vec::new();
+    let mut disagreed = 0usize;
+
+    for n in 1..count {
+        let name = format!("{stem}{n:04}{ext}");
+        let bytes = match guitar
+            .read_file_range(&name, 0, ringdown::loopfile::HEADER_PREFIX)
+            .await
+        {
+            Ok(bytes) => bytes,
+            // A gap in the numbering is an answer, not a failure.
+            Err(TransportError::Rpc(ringdown::rpc::RpcError::Device(_))) => continue,
+            Err(e) => return Err(e),
+        };
+
+        let short = name.rsplit('/').next().unwrap_or(&name).to_string();
+        match ringdown::loopfile::parse(&bytes) {
+            Ok(header) => {
+                let meta = header.meta;
+                let (bpm, beats, raw) = match meta {
+                    Some(m) => (
+                        format!("{}", m.tempo_bpm),
+                        format!("{}", m.beats()),
+                        format!(
+                            "{}, {}, {}, {}, {}, {}",
+                            m.version,
+                            m.tempo_bpm,
+                            m.length_first,
+                            m.den,
+                            m.length_second,
+                            m.trailing
+                        ),
+                    ),
+                    None => ("-".into(), "-".into(), "(no vendor chunk)".into()),
+                };
+                println!(
+                    "        {short:<15} {:>5.2}s  {bpm:>4}  {beats:>5}  {raw}",
+                    header.seconds()
+                );
+                if header.tempo_agrees_with_audio() == Some(false) {
+                    disagreed += 1;
+                    println!("          ^ header tempo does NOT predict this audio length");
+                }
+                if let Some(m) = meta {
+                    seen.push(m);
+                }
+            }
+            Err(e) => println!("        {short:<15} unreadable: {e}"),
+        }
+    }
+
+    report_length_fields(&seen, disagreed);
+    Ok(())
+}
+
+/// Say what the collected headers settle, and what they do not.
+fn report_length_fields(seen: &[ringdown::loopfile::LoopMeta], disagreed: usize) {
+    println!();
+    if seen.is_empty() {
+        println!("        no loop carried the vendor's chunk.");
+        return;
+    }
+
+    let distinct = |f: fn(&ringdown::loopfile::LoopMeta) -> u32| {
+        let mut v: Vec<u32> = seen.iter().map(f).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    let first = distinct(|m| m.length_first);
+    let second = distinct(|m| m.length_second);
+    let den = distinct(|m| m.den);
+    let version = distinct(|m| m.version);
+    let trailing = distinct(|m| m.trailing);
+
+    println!("        across {} loops:", seen.len());
+    println!("          length_first  {first:?}");
+    println!("          length_second {second:?}");
+    println!("          den           {den:?}");
+    println!("          version       {version:?}");
+    println!("          trailing      {trailing:?}");
+    println!();
+
+    // The discriminator: a bar count varies with how long you played, a meter
+    // does not. If exactly one of the two moves, it is the bar count.
+    match (first.len() > 1, second.len() > 1) {
+        (true, false) => {
+            println!("        length_first varies and length_second does not, so");
+            println!("        length_first is the bar count and length_second is beats per bar.");
+        }
+        (false, true) => {
+            println!("        length_second varies and length_first does not, so");
+            println!("        length_second is the bar count and length_first is beats per bar.");
+        }
+        (true, true) => {
+            println!("        both vary, so this does not separate them. A loop recorded at");
+            println!("        a deliberately known bar count and meter would.");
+        }
+        (false, false) => {
+            println!("        neither varies across these loops, so they stay unseparated.");
+        }
+    }
+
+    if disagreed > 0 {
+        println!();
+        println!("        {disagreed} loop(s) whose header tempo does not predict their");
+        println!("        audio length. That contradicts the reading of these fields and");
+        println!("        is worth more than all the agreements are.");
+    }
+}
+
+/// Split `/Loops/loop0032.wav` into `("/Loops/loop", 32, ".wav")`.
+fn split_numbered(path: &str) -> Option<(&str, u32, &str)> {
+    let dot = path.rfind('.')?;
+    let (base, ext) = path.split_at(dot);
+    let digits_start = base.len()
+        - base
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .count();
+    if digits_start == base.len() {
+        return None;
+    }
+    let number = base[digits_start..].parse().ok()?;
+    Some((&base[..digits_start], number, ext))
+}
+
 async fn fetch_recording(
     guitar: &mut Guitar,
     target: &str,
@@ -1171,5 +1339,45 @@ fn advice(e: &TransportError) -> &'static str {
              toggling Bluetooth off and on clears its device cache."
         }
         _ => "Record what happened in the plan's Findings before changing anything.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The device names the *next* recording, so the index counts up to it
+    /// rather than including it. Getting this split wrong reads a file that
+    /// does not exist, which is how `GetLastRecordingName` misled us once
+    /// already.
+    #[test]
+    fn a_recording_path_splits_into_stem_number_and_extension() {
+        assert_eq!(
+            split_numbered("/Loops/loop0032.wav"),
+            Some(("/Loops/loop", 32, ".wav"))
+        );
+        assert_eq!(
+            split_numbered("/Loops/loop0001.wav"),
+            Some(("/Loops/loop", 1, ".wav"))
+        );
+        // Leading zeros must not be read as octal, and the count is what the
+        // digits say rather than how many there are.
+        assert_eq!(split_numbered("/x/y0009.wav"), Some(("/x/y", 9, ".wav")));
+    }
+
+    #[test]
+    fn a_path_with_no_number_is_declined_rather_than_guessed() {
+        assert_eq!(split_numbered("/Loops/loop.wav"), None);
+        assert_eq!(split_numbered("noextension0001"), None);
+        assert_eq!(split_numbered(""), None);
+    }
+
+    /// Digits in the directory must not be mistaken for the file's number.
+    #[test]
+    fn only_the_digits_immediately_before_the_extension_count() {
+        assert_eq!(
+            split_numbered("/Loops2024/take0007.wav"),
+            Some(("/Loops2024/take", 7, ".wav"))
+        );
     }
 }

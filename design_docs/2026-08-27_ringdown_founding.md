@@ -616,6 +616,54 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H20 — The loop header's `200` is a tempo, and a loop's metadata costs one
+round trip rather than ten minutes.** (2026-08-28, desk work against the
+already-retrieved `loop0031.wav`; no instrument involved.)
+
+The `JUNK` chunk's six values are `1, 200, 7, 8, 4, 0`, and the audio they sit
+in front of is 741,376 bytes of 16-bit mono at 44.1 kHz — **370,688 samples,
+8.4056 s**. That is enough to identify two of the six by arithmetic:
+
+- **`200` is BPM.** 7 × 4 = 28 beats at 200 BPM is 8.400 s. **No other product
+  of these values is close:** 7 × 8 = 56 beats would run 16.8 s and 8 × 4 = 32
+  would run 9.6 s. So 28 is the loop's length in beats and `8` is not a length
+  field at all.
+- **The residual 5.6 ms is block rounding, and exactly so.** 370,688 is
+  precisely 181 × 2048, and 2048 is the *largest* power of two that divides it
+  — 4096 does not. The tempo-exact 370,440 samples is 180.88 blocks; rounding
+  up to 181 reproduces the file size to the byte. The recorder captures whole
+  2048-sample DSP blocks, which also names the audio block size of the STM32
+  side for free.
+
+**What is deliberately not concluded.** Which of `7` and `4` is bars and which
+is beats-per-bar does not follow, because only their product reaches the audio:
+7 bars of 4 and 4 bars of 7 are the same 28 beats. `ringdown::loopfile` names
+them `length_first` and `length_second` for that reason. Naming a field for an
+inferred meaning is the exact error that `den` was, and that one cost a write
+to the owner's instrument; a positional name that looks unfinished is the
+cheaper mistake.
+
+`8` remains unexplained, with one suggestive coincidence: `ReadMetronome` on
+this instrument returns `den: 8` while its metronome is demonstrably in 5/4. Two
+unexplained 8s on the same device are more likely one field than two.
+
+**The consequence is larger than the puzzle.** `DumpFile` takes an offset and a
+size (H14), so a loop's header is **one round trip of 92 bytes**. Retrieving a
+loop's *audio* took 620.7 s over roughly 3,700 round trips when measured
+(recorded in woodshed's `2026-08-27_smart_instrument_plan.md`); retrieving its
+*tempo, length and format* is a single call. Indexing all 31 loops is seconds,
+not the five hours a bulk archive would take, and browsing a library by tempo
+is practical even though downloading it is not. This substantially softens the
+throughput constraint recorded in W3: the slow path is only ever needed for the
+take actually wanted.
+
+Implemented in `ringdown::loopfile` with the reference file's first 92 bytes
+pinned as a fixture — verified byte-identical to the file on disk, not
+transcribed by eye — and `probe --index` reads the whole library this way.
+The index also prints each header's values across loops, which is what will
+separate the two length fields: a bar count varies with how long you played and
+a meter does not, so one file cannot tell them apart and a dozen can.
+
 **H19 — `ReadConfig` is dead code in the vendor's app too, and ringdown does
 not need it.** Two facts close H18.
 
@@ -896,10 +944,13 @@ path. Two independent methods, agreeing byte-for-byte on a real file. That is
 the strongest single confirmation the protocol map has received.
 
 The `JUNK` chunk is a vendor extension labelled **"HyVibe loop file"** carrying
-six 32-bit values: `1, 200, 7, 8, 4, 0`. Unidentified, but `8` and `4` are
-plausible time-signature and bar counts and `1` a format version. Anyone
-reading these files later will want this decoded; it is not needed to read the
-audio, since the chunk is `JUNK` and standard readers skip it.
+six 32-bit values: `1, 200, 7, 8, 4, 0`. Anyone reading these files later will
+want this decoded; it is not needed to read the audio, since the chunk is
+`JUNK` and standard readers skip it.
+
+**Decoded 2026-08-28 — see H20.** The guess filed here, that `8` and `4` are a
+time signature, is wrong: `200` is the tempo and `7 × 4 = 28` is the length in
+beats, which leaves `8` as the value that is *not* a length.
 
 **Parameter naming is not uniform across the file methods.** `name` works;
 `file` returns **code 2, "OPEN FILE ERROR"** — note both a different code *and*

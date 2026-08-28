@@ -51,6 +51,7 @@ pub mod crc32;
 pub mod handshake;
 pub mod llt;
 pub mod llt2;
+pub mod loopfile;
 pub mod rpc;
 
 /// The guitar's GATT service.
