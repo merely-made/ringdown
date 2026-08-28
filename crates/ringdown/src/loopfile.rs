@@ -6,55 +6,67 @@
 //! audio plays anywhere while the metadata is invisible to everything that does
 //! not look for it.
 //!
-//! That metadata is worth recovering because it makes a loop importable *in
-//! time*: a recording that arrives knowing its own tempo can be dropped onto a
-//! grid instead of being stretched by ear.
+//! Recovering it makes a loop importable *in time*: a recording that arrives
+//! knowing its own tempo can be dropped onto a grid instead of stretched by ear.
 //!
-//! # What the six values are
+//! # The six values
 //!
-//! From `/Loops/loop0031.wav` on the reference instrument they are
-//! `1, 200, 7, 8, 4, 0`. Two of them are established by arithmetic against the
-//! audio itself, and the rest are not, so this module names only the first two
-//! and leaves the others as what they are.
+//! ```text
+//! version, tempo_bpm, beats_per_bar, beat_unit, bars, partial
+//! ```
 //!
-//! The audio is 741,376 bytes of 16-bit mono at 44,100 Hz — **370,688 samples,
-//! 8.4056 s**. Against that:
+//! Fields three to five are a time signature and a bar count: the instrument's
+//! owner confirms `loop0031.wav` is **200 BPM, 7/8, 4 bars**, which is
+//! `beats_per_bar = 7`, `beat_unit = 8`, `bars = 4` exactly.
 //!
-//! - **`200` is the tempo.** 7 × 4 = 28 beats at 200 BPM is 8.400 s, which
-//!   matches to 5.6 ms. No other product of these values fits: 7 × 8 = 56
-//!   beats would be 16.8 s and 8 × 4 = 32 would be 9.6 s, both far outside the
-//!   file. So `8` is not a length field, and 28 is the loop's length in beats.
-//! - **The 5.6 ms is block rounding, not error.** 370,688 is exactly
-//!   181 × 2048, and 2048 is the largest power of two that divides it — 4096
-//!   does not. The tempo-exact length of 370,440 samples is 180.88 blocks, and
-//!   rounding *up* to 181 gives the file size precisely. The recorder captures
-//!   whole 2048-sample DSP blocks.
+//! `tempo_bpm` counts [`beat_unit`](LoopMeta::beat_unit) notes, not quarters:
+//! 4 bars of 7/8 is 28 eighth-notes, and at 200 of them per minute that is the
+//! 8.4 s the file holds.
 //!
-//! **Which of `7` and `4` is bars and which is beats-per-bar is not
-//! determined**, because only their product appears in the audio; 7 bars of 4
-//! and 4 bars of 7 are the same 28 beats. They are therefore
-//! [`LoopMeta::length_first`] and [`LoopMeta::length_second`] here rather than
-//! names that would assert more than was measured. The one previous guess at a
-//! field's meaning on this protocol — reading `den` as a time-signature
-//! denominator — was wrong, and cost a write to someone's instrument.
+//! Established against **all 31 loops on the reference instrument** — five
+//! tempos, four bar counts, two meters, and both states of the last field. The
+//! relation that holds across every one of them:
 //!
-//! `8` is unexplained. It is suggestive that `ReadMetronome` on the same
-//! instrument returns `den: 8` while its metronome is demonstrably in 5/4, so
-//! whatever `den` means it is not a denominator, and the same 8 appearing here
-//! is more likely the same field than a coincidence. `1` is almost certainly a
-//! format version and `0` is almost certainly spare, but neither is tested.
+//! ```text
+//! beats    = beats_per_bar × bars
+//! nominal  = beats × 60 / tempo_bpm            (seconds)
+//! recorded = ceil(nominal_samples / 256) × 256 (when partial == 0)
+//! ```
 //!
-//! # Settling the rest cheaply
+//! Every one of the 31 files is a whole number of **256-sample blocks**, and
+//! for all 24 with `partial == 0` the block-rounded nominal length reproduces
+//! the recorded length exactly, with no exceptions.
 //!
-//! Everything above comes from a single file, and one more file would separate
-//! the length fields — a loop whose bar count differs from its meter breaks the
-//! symmetry immediately.
+//! Why the whole corpus and not one file: **the block is 256, and a single
+//! file cannot show that.** `loop0031.wav` alone is also divisible by 2048,
+//! which is wrong for every other loop. `probe --index` reads all 31 headers in
+//! one round trip each, so the check costs about a minute of instrument time
+//! and is worth running against any instrument this code meets.
 //!
-//! The good news is that this costs almost nothing. `DumpFile` takes an offset
-//! and a size, so a loop's metadata is **one round trip of
-//! [`HEADER_PREFIX`] bytes**, not the ten-minute transfer a whole loop needs.
-//! Indexing an entire library is seconds of work, which makes browsing by
-//! tempo practical even though fetching by audio is not.
+//! # `beats_per_bar` and `bars` are separable, and the corpus shows which
+//!
+//! [`beats_per_bar`](LoopMeta::beats_per_bar) takes two values across the
+//! corpus, `4` and `7`; [`bars`](LoopMeta::bars) takes four, `4`, `8`, `12` and
+//! `14`. Read the other way round, a player would be recording in 12- and
+//! 14-beat bars and changing meter between consecutive takes while holding the
+//! bar count at 7. Read this way they set 7/8 for three takes and recorded 14,
+//! 12 and 4 bars of it. The owner confirms the latter for `loop0031`, and the
+//! field that moves often is the bar count.
+//!
+//! # A discrepancy that belongs to `ReadMetronome`, not here
+//!
+//! `beat_unit` is `8` on 28 loops and `4` on three, and reads as a denominator
+//! throughout — most of these loops are in 4/8, three in 4/4, three in 7/8.
+//!
+//! That sits awkwardly against one live reading: `ReadMetronome` returned
+//! `{"bpm":60,"den":8,"num":5}` from an instrument whose metronome its owner
+//! reports as 5/4. Since the loop files settle what the field *means*, the
+//! discrepancy is in that observation rather than in the interpretation — a
+//! stale reading, a different state, or a mistranscription. It is recorded as
+//! an open question against `ReadMetronome` and does not qualify anything here.
+//!
+//! `beat_unit` does not enter the duration arithmetic; it only says what note
+//! [`tempo_bpm`](LoopMeta::tempo_bpm) counts.
 
 use core::fmt;
 
@@ -73,49 +85,61 @@ pub const JUNK_LABEL: &[u8] = b"HyVibe loop file";
 /// Count of 32-bit values following [`JUNK_LABEL`].
 pub const META_VALUES: usize = 6;
 
-/// The DSP block the recorder rounds a loop's length up to, in samples.
+/// The block the recorder writes in, in samples.
 ///
-/// Derived, not assumed: see the module documentation.
-pub const BLOCK_SAMPLES: u32 = 2048;
+/// Every one of the 31 loops on the reference instrument is a whole number of
+/// these, and 512 divides only some of them, so 256 is the actual granularity
+/// rather than the largest that happened to fit one file.
+pub const BLOCK_SAMPLES: u32 = 256;
 
-/// The vendor's metadata, as six 32-bit values.
-///
-/// Only [`version`](Self::version) and [`tempo_bpm`](Self::tempo_bpm) are named
-/// for what they mean, because only those two are established. The rest keep
-/// positional names on purpose.
+/// The vendor's metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoopMeta {
-    /// Format version. `1` in every file seen; untested beyond that.
+    /// Format version. `1` on every loop seen.
     pub version: u32,
-    /// Tempo in beats per minute. Confirmed against the audio's own length.
+    /// Tempo in beats per minute, counting [`beat_unit`](Self::beat_unit)
+    /// notes — eighths when `beat_unit` is 8, not quarters.
     pub tempo_bpm: u32,
-    /// First length field. `7` in the reference file.
+    /// Beats in one bar: the time signature's numerator. `4` on 28 loops,
+    /// `7` on three.
+    pub beats_per_bar: u32,
+    /// The note a beat is: the time signature's denominator. `8` on 28 loops,
+    /// `4` on three.
     ///
-    /// This and [`length_second`](Self::length_second) multiply to the loop's
-    /// length in beats — see [`beats`](Self::beats). Which one counts bars is
-    /// not known.
-    pub length_first: u32,
-    /// The value that is not a length. `8` in the reference file, and `8` is
-    /// also what `ReadMetronome` reports as `den` on an instrument set to 5/4.
-    pub den: u32,
-    /// Second length field. `4` in the reference file.
-    pub length_second: u32,
-    /// Trailing value. `0` in the reference file; purpose unknown.
-    pub trailing: u32,
+    /// Does not enter the duration arithmetic — it only says what unit
+    /// [`tempo_bpm`](Self::tempo_bpm) counts. Spelled `den` on the wire.
+    pub beat_unit: u32,
+    /// Bars the loop was set to run. `4`, `8`, `12` or `14` across the corpus.
+    pub bars: u32,
+    /// Non-zero when the take did not run its full bar count.
+    ///
+    /// Every loop with this set is *shorter* than its grid length — between 29%
+    /// and 96% of it — and every loop without it lands on the grid exactly. Use
+    /// [`is_partial`](Self::is_partial) rather than comparing to 1.
+    ///
+    /// Very likely the `free` flag `StartRecording` takes, which selects
+    /// free-running over bar-locked recording. That is an inference from the
+    /// two matching descriptions, not something observed, so the field is named
+    /// for what it demonstrably indicates.
+    pub partial: u32,
 }
 
 impl LoopMeta {
     /// The loop's length in beats.
-    ///
-    /// The product is measured; its factorisation is not. A caller wanting to
-    /// draw bar lines needs to know which field is which, and this module
-    /// cannot yet say.
     pub fn beats(&self) -> u32 {
-        self.length_first.saturating_mul(self.length_second)
+        self.beats_per_bar.saturating_mul(self.bars)
     }
 
-    /// How long [`beats`](Self::beats) lasts at [`tempo_bpm`](Self::tempo_bpm),
-    /// in samples at `sample_rate`, before block rounding.
+    /// Whether the take stopped short of its bar count.
+    pub fn is_partial(&self) -> bool {
+        self.partial != 0
+    }
+
+    /// How long [`beats`](Self::beats) lasts at this tempo, in samples, before
+    /// block rounding.
+    ///
+    /// This is the *grid* length. A partial take is shorter than it; a complete
+    /// one is [`expected_samples`](Self::expected_samples).
     ///
     /// `None` when the tempo is zero, which no real file should carry but a
     /// corrupt one might.
@@ -126,8 +150,10 @@ impl LoopMeta {
         Some(u64::from(self.beats()) * u64::from(sample_rate) * 60 / u64::from(self.tempo_bpm))
     }
 
-    /// [`nominal_samples`](Self::nominal_samples) rounded up to a whole
-    /// [`BLOCK_SAMPLES`] block, which is what the recorder actually writes.
+    /// What a complete take of this loop actually occupies: the grid length
+    /// rounded up to a whole [`BLOCK_SAMPLES`] block.
+    ///
+    /// Meaningless for a partial take, which stops wherever it was stopped.
     pub fn expected_samples(&self, sample_rate: u32) -> Option<u64> {
         let nominal = self.nominal_samples(sample_rate)?;
         let block = u64::from(BLOCK_SAMPLES);
@@ -169,8 +195,31 @@ pub struct LoopHeader {
     /// The vendor's metadata, when the `JUNK` chunk carries its label.
     ///
     /// `None` for a WAV that is not one of these — a file copied in over USB,
-    /// say — which is a fact worth surfacing rather than defaulting away.
+    /// say — which is worth surfacing rather than defaulting away.
     pub meta: Option<LoopMeta>,
+}
+
+/// How a loop's audio compares to the length its header implies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LengthCheck {
+    /// A complete take landing exactly on its block-rounded grid length.
+    OnGrid,
+    /// A take marked partial, and shorter than the grid as one should be.
+    PartialAsMarked {
+        /// Samples short of the grid.
+        short_by: u64,
+    },
+    /// The audio does not match what the header implies.
+    ///
+    /// Worth more attention than any agreement: the reading in this module was
+    /// built from a corpus of one instrument, and a file that disagrees is how
+    /// it gets corrected again.
+    Disagrees {
+        /// What a complete take would occupy.
+        expected: u64,
+        /// What this file actually holds.
+        actual: u64,
+    },
 }
 
 impl LoopHeader {
@@ -191,17 +240,43 @@ impl LoopHeader {
         f64::from(self.samples()) / f64::from(self.format.sample_rate)
     }
 
-    /// Whether the audio is the length the metadata's tempo implies.
+    /// Whether the audio is the length the metadata implies.
     ///
-    /// The check that established what these fields mean, kept executable: a
-    /// file whose header disagrees with its own audio means the reading here is
-    /// wrong for that file, and it is better to hear that from the parser than
-    /// to import it silently at the wrong tempo.
+    /// The check that established what these fields mean, kept executable and
+    /// applied to the two cases separately: a complete take must land on its
+    /// block-rounded grid length exactly, and a partial one must be shorter
+    /// than the grid.
     ///
     /// `None` when there is no metadata to check against.
-    pub fn tempo_agrees_with_audio(&self) -> Option<bool> {
-        let expected = self.meta?.expected_samples(self.format.sample_rate)?;
-        Some(expected == u64::from(self.samples()))
+    pub fn check_length(&self) -> Option<LengthCheck> {
+        let meta = self.meta?;
+        let rate = self.format.sample_rate;
+        let actual = u64::from(self.samples());
+        let nominal = meta.nominal_samples(rate)?;
+        let expected = meta.expected_samples(rate)?;
+
+        if meta.is_partial() {
+            return Some(if actual < nominal {
+                LengthCheck::PartialAsMarked {
+                    short_by: nominal - actual,
+                }
+            } else {
+                LengthCheck::Disagrees { expected, actual }
+            });
+        }
+        Some(if actual == expected {
+            LengthCheck::OnGrid
+        } else {
+            LengthCheck::Disagrees { expected, actual }
+        })
+    }
+
+    /// Whether the audio agrees with the header, either way.
+    pub fn length_agrees(&self) -> Option<bool> {
+        Some(!matches!(
+            self.check_length()?,
+            LengthCheck::Disagrees { .. }
+        ))
     }
 }
 
@@ -338,10 +413,10 @@ fn parse_meta(body: &[u8]) -> Option<LoopMeta> {
     Some(LoopMeta {
         version: v(0)?,
         tempo_bpm: v(1)?,
-        length_first: v(2)?,
-        den: v(3)?,
-        length_second: v(4)?,
-        trailing: v(5)?,
+        beats_per_bar: v(2)?,
+        beat_unit: v(3)?,
+        bars: v(4)?,
+        partial: v(5)?,
     })
 }
 
@@ -350,20 +425,20 @@ mod tests {
     use super::*;
 
     /// The first 92 bytes of `/Loops/loop0031.wav`, read off the reference
-    /// instrument on 2026-08-27. Everything this module claims is claimed about
-    /// these bytes.
+    /// instrument on 2026-08-27 and checked byte-identical against the copy on
+    /// disk rather than transcribed by eye.
     const LOOP0031: [u8; 92] = [
         0x52, 0x49, 0x46, 0x46, 0x54, 0x50, 0x0b, 0x00, // RIFF, size
         0x57, 0x41, 0x56, 0x45, // WAVE
         0x4a, 0x55, 0x4e, 0x4b, 0x28, 0x00, 0x00, 0x00, // JUNK, 40
         0x48, 0x79, 0x56, 0x69, 0x62, 0x65, 0x20, 0x6c, // "HyVibe l"
         0x6f, 0x6f, 0x70, 0x20, 0x66, 0x69, 0x6c, 0x65, // "oop file"
-        0x01, 0x00, 0x00, 0x00, // 1
-        0xc8, 0x00, 0x00, 0x00, // 200
-        0x07, 0x00, 0x00, 0x00, // 7
-        0x08, 0x00, 0x00, 0x00, // 8
-        0x04, 0x00, 0x00, 0x00, // 4
-        0x00, 0x00, 0x00, 0x00, // 0
+        0x01, 0x00, 0x00, 0x00, // version 1
+        0xc8, 0x00, 0x00, 0x00, // 200 bpm
+        0x07, 0x00, 0x00, 0x00, // 7 beats per bar
+        0x08, 0x00, 0x00, 0x00, // beat_unit 8 (eighth notes)
+        0x04, 0x00, 0x00, 0x00, // 4 bars
+        0x00, 0x00, 0x00, 0x00, // not partial
         0x66, 0x6d, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, // fmt , 16
         0x01, 0x00, // PCM
         0x01, 0x00, // mono
@@ -374,6 +449,61 @@ mod tests {
         0x64, 0x61, 0x74, 0x61, 0x00, 0x50, 0x0b, 0x00, // data, 741376
     ];
 
+    /// Every loop on the reference instrument, read by `probe --index` on
+    /// 2026-08-28: `(name, samples, bpm, beats_per_bar, beat_unit, bars, partial)`.
+    ///
+    /// The whole corpus rather than a sample of it. Five tempos, four bar
+    /// counts, two meters and both states of `partial` between them constrain
+    /// the reading in ways no single file can: one loop is consistent with
+    /// several block sizes and with either assignment of the two length
+    /// fields, and thirty-one are not.
+    const CORPUS: [(&str, u32, u32, u32, u32, u32, u32); 31] = [
+        ("loop0001", 1_620_736, 160, 7, 8, 14, 0),
+        ("loop0002", 1_389_312, 160, 7, 8, 12, 0),
+        ("loop0003", 529_408, 160, 4, 8, 8, 0),
+        ("loop0004", 509_952, 160, 4, 8, 8, 1),
+        ("loop0005", 529_408, 160, 4, 8, 8, 0),
+        ("loop0006", 155_648, 160, 4, 8, 8, 1),
+        ("loop0007", 398_848, 160, 4, 8, 8, 1),
+        ("loop0008", 370_432, 160, 4, 8, 8, 1),
+        ("loop0009", 529_408, 160, 4, 8, 8, 0),
+        ("loop0010", 529_408, 160, 4, 8, 8, 0),
+        ("loop0011", 434_688, 160, 4, 8, 8, 1),
+        ("loop0012", 264_192, 160, 4, 8, 8, 1),
+        ("loop0013", 529_408, 160, 4, 8, 8, 0),
+        ("loop0014", 529_408, 160, 4, 8, 8, 0),
+        ("loop0015", 529_408, 160, 4, 8, 8, 0),
+        ("loop0016", 264_704, 160, 4, 8, 4, 0),
+        ("loop0017", 264_704, 160, 4, 8, 4, 0),
+        ("loop0018", 264_704, 160, 4, 8, 4, 0),
+        ("loop0019", 264_704, 160, 4, 8, 4, 0),
+        ("loop0020", 264_704, 160, 4, 8, 4, 0),
+        ("loop0021", 353_024, 120, 4, 8, 4, 0),
+        ("loop0022", 705_792, 120, 4, 8, 8, 0),
+        ("loop0023", 502_784, 120, 4, 8, 8, 1),
+        ("loop0024", 705_792, 120, 4, 8, 8, 0),
+        ("loop0025", 1_411_328, 60, 4, 4, 8, 0),
+        ("loop0026", 1_411_328, 60, 4, 4, 8, 0),
+        ("loop0027", 1_411_328, 60, 4, 4, 8, 0),
+        ("loop0028", 470_528, 90, 4, 8, 4, 0),
+        ("loop0029", 470_528, 90, 4, 8, 4, 0),
+        ("loop0030", 470_528, 90, 4, 8, 4, 0),
+        ("loop0031", 370_688, 200, 7, 8, 4, 0),
+    ];
+
+    const RATE: u32 = 44_100;
+
+    fn meta_of(row: (&str, u32, u32, u32, u32, u32, u32)) -> LoopMeta {
+        LoopMeta {
+            version: 1,
+            tempo_bpm: row.2,
+            beats_per_bar: row.3,
+            beat_unit: row.4,
+            bars: row.5,
+            partial: row.6,
+        }
+    }
+
     fn reference() -> LoopHeader {
         parse(&LOOP0031).expect("the reference header must parse")
     }
@@ -383,7 +513,7 @@ mod tests {
         let h = reference();
         assert_eq!(h.format.format_tag, 1);
         assert_eq!(h.format.channels, 1);
-        assert_eq!(h.format.sample_rate, 44_100);
+        assert_eq!(h.format.sample_rate, RATE);
         assert_eq!(h.format.bits_per_sample, 16);
         assert_eq!(h.audio_bytes, 741_376);
         assert_eq!(h.audio_offset, HEADER_PREFIX);
@@ -399,65 +529,140 @@ mod tests {
     }
 
     #[test]
-    fn the_vendor_metadata_is_the_six_values_observed() {
+    fn the_reference_metadata_reads_as_four_bars_of_seven() {
         let m = reference().meta.expect("the JUNK chunk is labelled");
         assert_eq!(m.version, 1);
         assert_eq!(m.tempo_bpm, 200);
-        assert_eq!(m.length_first, 7);
-        assert_eq!(m.den, 8);
-        assert_eq!(m.length_second, 4);
-        assert_eq!(m.trailing, 0);
+        assert_eq!(m.beats_per_bar, 7);
+        assert_eq!(m.beat_unit, 8);
+        assert_eq!(m.bars, 4);
+        assert!(!m.is_partial());
         assert_eq!(m.beats(), 28);
     }
 
-    /// The whole identification, in one assertion: 28 beats at 200 BPM, rounded
-    /// up to a whole DSP block, is the audio length exactly.
+    /// **The corpus test.** Every complete take lands exactly on its
+    /// block-rounded grid length, and every partial one falls short of the
+    /// grid. One counterexample refutes the whole reading, which is the point.
     #[test]
-    fn the_tempo_predicts_the_audio_length() {
-        let h = reference();
-        assert_eq!(h.tempo_agrees_with_audio(), Some(true));
-        assert_eq!(h.meta.unwrap().nominal_samples(44_100), Some(370_440));
-        assert_eq!(h.meta.unwrap().expected_samples(44_100), Some(370_688));
+    fn the_model_predicts_all_thirty_one_loops() {
+        let mut complete = 0;
+        let mut partial = 0;
+        for row in CORPUS {
+            let (name, samples, ..) = row;
+            let m = meta_of(row);
+            let nominal = m.nominal_samples(RATE).unwrap();
+            if m.is_partial() {
+                partial += 1;
+                assert!(
+                    u64::from(samples) < nominal,
+                    "{name} is marked partial but is not short of its grid"
+                );
+            } else {
+                complete += 1;
+                assert_eq!(
+                    u64::from(samples),
+                    m.expected_samples(RATE).unwrap(),
+                    "{name} does not land on its grid"
+                );
+            }
+        }
+        assert_eq!(complete, 24);
+        assert_eq!(partial, 7);
     }
 
-    /// Block rounding is the explanation for the 248-sample excess, so it has
-    /// to be doing real work — if the nominal length were already aligned the
-    /// test above would pass whether or not this module understood why.
+    /// 256 is the block because it divides every loop and 512 does not. The
+    /// earlier reading said 2048, which divides exactly one of them — pinning
+    /// both halves keeps that from being "tidied" back to a rounder number.
     #[test]
-    fn the_block_rounding_is_what_closes_the_gap() {
-        let m = reference().meta.unwrap();
-        let nominal = m.nominal_samples(44_100).unwrap();
-        assert_ne!(nominal % u64::from(BLOCK_SAMPLES), 0, "nothing to round");
-        assert_eq!(m.expected_samples(44_100).unwrap() - nominal, 248);
+    fn two_hundred_and_fifty_six_is_the_block_and_512_is_not() {
+        assert_eq!(BLOCK_SAMPLES, 256);
+        for (name, samples, ..) in CORPUS {
+            assert_eq!(samples % BLOCK_SAMPLES, 0, "{name} is not whole blocks");
+        }
+        assert!(
+            CORPUS.iter().any(|(_, s, ..)| s % (BLOCK_SAMPLES * 2) != 0),
+            "512 must fail on something, or 256 is not the real granularity"
+        );
     }
 
-    /// 2048 is the block size because it is the largest power of two that
-    /// divides the audio. Pinning this stops a later "tidy-up" from changing it
-    /// to a rounder-looking 4096, which does not divide it.
+    /// Block rounding has to be doing real work. If every grid length were
+    /// already aligned, the corpus test would pass whether or not this module
+    /// understood why.
     #[test]
-    fn two_thousand_and_forty_eight_is_the_largest_block_that_divides_it() {
-        let samples = u64::from(reference().samples());
-        assert_eq!(samples % u64::from(BLOCK_SAMPLES), 0);
-        assert_ne!(samples % (u64::from(BLOCK_SAMPLES) * 2), 0);
+    fn block_rounding_is_load_bearing() {
+        let rounded = CORPUS
+            .iter()
+            .filter(|row| row.6 == 0)
+            .filter(|row| {
+                let m = meta_of(**row);
+                !m.nominal_samples(RATE)
+                    .unwrap()
+                    .is_multiple_of(u64::from(BLOCK_SAMPLES))
+            })
+            .count();
+        assert_eq!(rounded, 24, "every complete take needed rounding up");
     }
 
-    /// The elimination that makes `200` the tempo rather than a guess: the
-    /// other products of these values put the loop nowhere near its real
-    /// length. Half a second of tolerance is far tighter than the alternatives
-    /// miss by.
+    /// The separation of the two length fields, as the corpus shows it: the
+    /// meter takes few values and the bar count many. Read the other way the
+    /// player would be recording in 12- and 14-beat bars.
     #[test]
-    fn no_other_pairing_of_the_values_fits_the_audio() {
-        let m = reference().meta.unwrap();
-        let actual = f64::from(reference().samples()) / 44_100.0;
+    fn the_bar_count_varies_and_the_meter_does_not() {
+        let mut meters: alloc::vec::Vec<u32> = CORPUS.iter().map(|r| r.3).collect();
+        meters.sort_unstable();
+        meters.dedup();
+        let mut bars: alloc::vec::Vec<u32> = CORPUS.iter().map(|r| r.5).collect();
+        bars.sort_unstable();
+        bars.dedup();
 
-        let seconds = |beats: u32| f64::from(beats) * 60.0 / f64::from(m.tempo_bpm);
-        assert!((seconds(7 * 4) - actual).abs() < 0.5, "7x4 must fit");
-        assert!((seconds(7 * 8) - actual).abs() > 0.5, "7x8 must not fit");
-        assert!((seconds(8 * 4) - actual).abs() > 0.5, "8x4 must not fit");
+        assert_eq!(meters, [4, 7]);
+        assert_eq!(bars, [4, 8, 12, 14]);
+        assert!(
+            bars.len() > meters.len(),
+            "the bar count must be the field that moves"
+        );
+    }
+
+    /// The partial flag is only ever 0 or 1, and it is not constant — a flag
+    /// that never varied would explain nothing.
+    #[test]
+    fn the_partial_flag_is_a_flag_and_it_varies() {
+        assert!(CORPUS.iter().all(|r| r.6 <= 1));
+        assert!(CORPUS.iter().any(|r| r.6 == 0));
+        assert!(CORPUS.iter().any(|r| r.6 == 1));
+    }
+
+    #[test]
+    fn the_length_check_reports_which_case_it_found() {
+        assert_eq!(reference().check_length(), Some(LengthCheck::OnGrid));
+        assert_eq!(reference().length_agrees(), Some(true));
+
+        // A partial take that is short of its grid, as one should be.
+        let partial = LoopMeta {
+            partial: 1,
+            ..reference().meta.unwrap()
+        };
+        let mut header = reference();
+        header.meta = Some(partial);
+        header.audio_bytes = 200_000;
+        assert!(matches!(
+            header.check_length(),
+            Some(LengthCheck::PartialAsMarked { .. })
+        ));
+
+        // A complete take that misses its grid is a disagreement, and must be
+        // reported rather than smoothed over.
+        let mut wrong = reference();
+        wrong.audio_bytes = 12_345;
+        assert!(matches!(
+            wrong.check_length(),
+            Some(LengthCheck::Disagrees { .. })
+        ));
+        assert_eq!(wrong.length_agrees(), Some(false));
     }
 
     /// A plain WAV written by anything else has no vendor metadata, and saying
-    /// so is more useful than inventing a default tempo for it.
+    /// so is more useful than inventing a tempo for it.
     #[test]
     fn a_wav_without_the_label_parses_but_carries_no_metadata() {
         let mut bytes = LOOP0031;
@@ -465,7 +670,7 @@ mod tests {
         bytes[20] = b'X';
         let h = parse(&bytes).unwrap();
         assert!(h.meta.is_none());
-        assert_eq!(h.tempo_agrees_with_audio(), None);
+        assert_eq!(h.check_length(), None);
         // The audio is still fully described, which is the point of the chunk
         // being JUNK.
         assert_eq!(h.samples(), 370_688);
@@ -492,8 +697,8 @@ mod tests {
 
     /// Odd-sized chunks are padded to an even boundary. No vendor file has one,
     /// but a reader that ignores the rule silently misreads every chunk after
-    /// the first odd one, which is the kind of bug that surfaces as "some other
-    /// person's loops don't work".
+    /// the first odd one, which surfaces as "some other person's loops don't
+    /// work".
     #[test]
     fn an_odd_length_chunk_is_padded_before_the_next_one() {
         let mut bytes = alloc::vec::Vec::new();
@@ -528,12 +733,12 @@ mod tests {
         let m = LoopMeta {
             version: 1,
             tempo_bpm: 0,
-            length_first: 4,
-            den: 8,
-            length_second: 4,
-            trailing: 0,
+            beats_per_bar: 4,
+            beat_unit: 8,
+            bars: 4,
+            partial: 0,
         };
-        assert_eq!(m.nominal_samples(44_100), None);
-        assert_eq!(m.expected_samples(44_100), None);
+        assert_eq!(m.nominal_samples(RATE), None);
+        assert_eq!(m.expected_samples(RATE), None);
     }
 }

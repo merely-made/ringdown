@@ -649,7 +649,7 @@ async fn index_loops(guitar: &mut Guitar) -> Result<(), TransportError> {
     }
     println!("        device names the next loop {next}, so {count} exist at most");
     println!();
-    println!("        file            dur     bpm  beats  raw values");
+    println!("        file             samples   nominal    delta  bpm beats  raw values");
 
     let mut seen: Vec<ringdown::loopfile::LoopMeta> = Vec::new();
     let mut disagreed = 0usize;
@@ -670,29 +670,35 @@ async fn index_loops(guitar: &mut Guitar) -> Result<(), TransportError> {
         match ringdown::loopfile::parse(&bytes) {
             Ok(header) => {
                 let meta = header.meta;
-                let (bpm, beats, raw) = match meta {
+                // Exact sample counts, not seconds: the question is whether a
+                // loop lands on its nominal length or misses it, and rounding
+                // to two decimals hides differences of a few hundred samples.
+                let samples = i64::from(header.samples());
+                let (bpm, music) = match meta {
                     Some(m) => (
                         format!("{}", m.tempo_bpm),
-                        format!("{}", m.beats()),
                         format!(
-                            "{}, {}, {}, {}, {}, {}",
-                            m.version,
-                            m.tempo_bpm,
-                            m.length_first,
-                            m.den,
-                            m.length_second,
-                            m.trailing
+                            "{}/{} x{:<2} {}",
+                            m.beats_per_bar,
+                            m.beat_unit,
+                            m.bars,
+                            if m.is_partial() { "partial" } else { "" }
                         ),
                     ),
-                    None => ("-".into(), "-".into(), "(no vendor chunk)".into()),
+                    None => ("-".into(), "(no vendor chunk)".into()),
                 };
+                let (nominal, delta) =
+                    match meta.and_then(|m| m.nominal_samples(header.format.sample_rate)) {
+                        Some(n) => (format!("{n}"), format!("{:+}", samples - n as i64)),
+                        None => ("-".into(), "-".into()),
+                    };
                 println!(
-                    "        {short:<15} {:>5.2}s  {bpm:>4}  {beats:>5}  {raw}",
-                    header.seconds()
+                    "        {short:<15} {samples:>8} {nominal:>9} {delta:>8} \
+                     {bpm:>4}  {music}"
                 );
-                if header.tempo_agrees_with_audio() == Some(false) {
+                if header.length_agrees() == Some(false) {
                     disagreed += 1;
-                    println!("          ^ header tempo does NOT predict this audio length");
+                    println!("          ^ DISAGREES with the model — worth more than the fits");
                 }
                 if let Some(m) = meta {
                     seen.push(m);
@@ -702,12 +708,18 @@ async fn index_loops(guitar: &mut Guitar) -> Result<(), TransportError> {
         }
     }
 
-    report_length_fields(&seen, disagreed);
+    summarise_library(&seen, disagreed);
     Ok(())
 }
 
-/// Say what the collected headers settle, and what they do not.
-fn report_length_fields(seen: &[ringdown::loopfile::LoopMeta], disagreed: usize) {
+/// Summarise the library, and say whether the header model held.
+///
+/// The field meanings are settled (see `ringdown::loopfile`), so this is a
+/// check rather than a discovery: every complete take should land on its
+/// block-rounded grid length, and every partial one should fall short of it. A
+/// disagreement means this instrument writes something the model does not
+/// cover, and is the only line here worth acting on.
+fn summarise_library(seen: &[ringdown::loopfile::LoopMeta], disagreed: usize) {
     println!();
     if seen.is_empty() {
         println!("        no loop carried the vendor's chunk.");
@@ -720,45 +732,32 @@ fn report_length_fields(seen: &[ringdown::loopfile::LoopMeta], disagreed: usize)
         v.dedup();
         v
     };
-    let first = distinct(|m| m.length_first);
-    let second = distinct(|m| m.length_second);
-    let den = distinct(|m| m.den);
-    let version = distinct(|m| m.version);
-    let trailing = distinct(|m| m.trailing);
+
+    let mut meters: Vec<String> = seen
+        .iter()
+        .map(|m| format!("{}/{}", m.beats_per_bar, m.beat_unit))
+        .collect();
+    meters.sort();
+    meters.dedup();
+    let partial = seen.iter().filter(|m| m.is_partial()).count();
 
     println!("        across {} loops:", seen.len());
-    println!("          length_first  {first:?}");
-    println!("          length_second {second:?}");
-    println!("          den           {den:?}");
-    println!("          version       {version:?}");
-    println!("          trailing      {trailing:?}");
+    println!("          time signatures  {}", meters.join(", "));
+    println!("          tempos           {:?}", distinct(|m| m.tempo_bpm));
+    println!("          bar counts       {:?}", distinct(|m| m.bars));
+    println!("          format versions  {:?}", distinct(|m| m.version));
+    println!(
+        "          {partial} partial take(s), {} complete",
+        seen.len() - partial
+    );
     println!();
 
-    // The discriminator: a bar count varies with how long you played, a meter
-    // does not. If exactly one of the two moves, it is the bar count.
-    match (first.len() > 1, second.len() > 1) {
-        (true, false) => {
-            println!("        length_first varies and length_second does not, so");
-            println!("        length_first is the bar count and length_second is beats per bar.");
-        }
-        (false, true) => {
-            println!("        length_second varies and length_first does not, so");
-            println!("        length_second is the bar count and length_first is beats per bar.");
-        }
-        (true, true) => {
-            println!("        both vary, so this does not separate them. A loop recorded at");
-            println!("        a deliberately known bar count and meter would.");
-        }
-        (false, false) => {
-            println!("        neither varies across these loops, so they stay unseparated.");
-        }
-    }
-
-    if disagreed > 0 {
-        println!();
-        println!("        {disagreed} loop(s) whose header tempo does not predict their");
-        println!("        audio length. That contradicts the reading of these fields and");
-        println!("        is worth more than all the agreements are.");
+    if disagreed == 0 {
+        println!("        every loop's audio matches what its header implies.");
+    } else {
+        println!("        {disagreed} loop(s) DISAGREE with the header model. That is worth");
+        println!("        more than all the agreements: the model was fitted to one");
+        println!("        instrument's library, and this is how it gets corrected.");
     }
 }
 

@@ -649,9 +649,69 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
-**H20 — The loop header's `200` is a tempo, and a loop's metadata costs one
-round trip rather than ten minutes.** (2026-08-28, desk work against the
-already-retrieved `loop0031.wav`; no instrument involved.)
+**H22 — The loop header is a time signature, a bar count and a completion flag,
+read across the whole library.** (2026-08-28, `probe --index` against
+H2-CC340 — 31 headers, one round trip each, about a minute of instrument time.)
+
+The six values are:
+
+```text
+version, tempo_bpm, beats_per_bar, den, bars, partial
+```
+
+`beats_per_bar`/`den` are a **time signature**, numerator and denominator, and
+`tempo_bpm` counts `den` notes rather than quarters. The instrument's owner
+confirms `loop0031.wav` is **200 BPM, 7/8, 4 bars**, which is exactly
+`7, 8, 4` in fields three to five.
+
+The relation, holding across all 31 files:
+
+```text
+beats    = beats_per_bar × bars
+nominal  = beats × 60 / tempo_bpm
+recorded = ceil(nominal_samples / 256) × 256      (when partial == 0)
+```
+
+**24 of 31 have `partial == 0` and land on that block-rounded length exactly,
+with no exceptions. The other 7 are all short of the grid**, between 29% and
+96% of it — so the last field distinguishes a take that ran its full bar count
+from one that did not. Very likely `StartRecording`'s `free` flag, though that
+is an inference from two matching descriptions rather than an observation.
+
+**The library, as read:** five tempos (60, 90, 120, 160, 200), bar counts of 4,
+8, 12 and 14, and meters of 4/4, 4/8 and 7/8.
+
+**This corrects H20, which was fitted to one file.** Three claims there were
+wrong, and each needed the corpus rather than more thought:
+
+| H20 claimed | Actually |
+|---|---|
+| block is 2048 samples | **256.** `loop0031` alone also divides by 2048; nothing else does |
+| the two length fields are inseparable | **separable.** The meter takes 2 values across the corpus, the bar count 4 |
+| the last value is spare | **a completion flag**, and it explains the 7 outliers |
+
+The first is the instructive one. A single sample is consistent with every
+block size that happens to divide it, and the largest such divisor looks like
+the answer. Reading 31 headers cost a minute and settled it.
+
+**`den` is a denominator after all, and the contradiction is elsewhere.** The
+earlier reading rejected that because `ReadMetronome` reported `den: 8` from an
+instrument its owner confirms was in 5/4. The loop files settle the meaning; the
+discrepancy therefore belongs to `ReadMetronome`, and it has company —
+`UpdateMetronome` accepted `den: 4` and then refused to put `den: 8` back, while
+the instrument's display never moved off 5/4 in either direction. **Two methods
+that mishandle a field is a smaller and more testable claim than a field nobody
+understands**, and it leaves woodshed's refusal to write `den` standing on a
+better reason than the one it had.
+
+Settling it needs one experiment: write a known time signature, read it back,
+and compare both against the guitar's own display.
+
+**H20 — SUPERSEDED by H22. The loop header's `200` is a tempo, and a loop's
+metadata costs one round trip rather than ten minutes.** (2026-08-28, desk work
+against the already-retrieved `loop0031.wav`; no instrument involved.) The
+transport conclusion below stands and is what made H22 affordable; the
+field-level claims do not.
 
 The `JUNK` chunk's six values are `1, 200, 7, 8, 4, 0`, and the audio they sit
 in front of is 741,376 bytes of 16-bit mono at 44.1 kHz — **370,688 samples,
@@ -1501,3 +1561,18 @@ is the truth, whatever the APK said.
     both changes need a push before its build sees them. The `woodshed-instrument`
     test run on 2026-08-28 passed against the *pushed* ringdown and therefore
     says nothing about either change.
+- **2026-08-28 — `probe --index` run against the instrument; H20 corrected to
+  H22.** 31 loop headers in about a minute, one round trip each. The header is
+  a time signature, a bar count and a completion flag; `beats_per_bar × bars`
+  beats at `tempo_bpm` (counting `den` notes) block-rounded to 256 samples
+  reproduces all 24 complete takes exactly, and the 7 marked otherwise are all
+  short of the grid. `loop0031` is 200 BPM, 7/8, 4 bars, confirmed by the owner.
+  - Three claims fitted to one file were wrong: the block is 256 not 2048, the
+    two length fields are separable, and the last value is not spare. The
+    corpus test in `loopfile` now pins all 31 observations, so a model that fits
+    one file and not the library cannot pass again.
+  - `den` **is** the denominator. The `ReadMetronome` reading that argued
+    against it is itself the anomaly, alongside `UpdateMetronome` refusing to
+    restore `den: 8` — two methods mishandling a settled field. Woodshed keeps
+    refusing to write `den`, now for that reason rather than for not knowing
+    what it means.

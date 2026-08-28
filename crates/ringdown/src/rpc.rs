@@ -485,10 +485,17 @@ const EQ_BAND_GAIN: &[ParamKey] = &[req("band"), req("gain")];
 const TOGGLE: &[ParamKey] = &[req("toggle")];
 const VALUE: &[ParamKey] = &[req("value")];
 
-/// `num` is beats per bar. **`den` is not a time-signature denominator** — the
-/// reference instrument reports `den: 8` while its metronome is demonstrably in
-/// 5/4 — so what it means is unestablished. It is declared because the wire
-/// carries it; callers who care about their tempo should leave it out.
+/// A time signature and a loop length: `num`/`den` are the numerator and
+/// **denominator**, `bars` the loop length, and `bpm` counts `den` notes.
+///
+/// Established from the loop files, where the same three fields appear and
+/// reproduce every recording's duration, and confirmed by the instrument's
+/// owner for a known take. See [`crate::loopfile`].
+///
+/// One thing is still open, and it is about this method rather than about the
+/// fields: `ReadMetronome` returned `den: 8` from an instrument whose metronome
+/// its owner reports as 5/4. Until that is explained, a `den` written *here* has
+/// not been shown to round-trip, even though its meaning is no longer in doubt.
 const METRONOME: &[ParamKey] = &[req("bpm"), opt("num"), opt("den"), opt("bars")];
 
 const RECORDING: &[ParamKey] = &[req("free")];
@@ -630,16 +637,19 @@ pub mod params {
 
     /// Metronome tempo, and optionally its meter and loop length.
     ///
-    /// `num` is beats per bar. **`den` is not a time-signature denominator** —
-    /// the reference instrument reports `den: 8` while its metronome is
-    /// demonstrably in 5/4 — so what it does mean is unestablished and passing
-    /// `None` is the honest default. Absent values are omitted rather than
-    /// sent as `null`, so the instrument keeps what it had.
+    /// `num` and `den` are the time signature's numerator and denominator, and
+    /// `bpm` counts `den` notes — so 7/8 at 200 is 200 eighth-notes a minute.
+    /// `bars` is the loop length. See [`crate::loopfile`], where the same
+    /// fields appear in every recording's header and account for its duration.
     ///
-    /// The wrong reading of `den` was written into a client once, and the
-    /// resulting write went to a real instrument before anyone checked. The
-    /// parameter stays exposed because the wire carries it; the documentation
-    /// is what changed.
+    /// Absent values are omitted rather than sent as `null`, so the instrument
+    /// keeps whatever it had for them.
+    ///
+    /// **`den` has not been shown to round-trip.** `ReadMetronome` reported
+    /// `den: 8` from an instrument its owner reports as being in 5/4, which is
+    /// an unexplained discrepancy in that *method* rather than in the field's
+    /// meaning. A caller writing a full time signature should read it back and
+    /// check the instrument's own display until that is settled.
     pub fn metronome(bpm: i64, num: Option<i64>, den: Option<i64>, bars: Option<i64>) -> Value {
         object(&[
             ("bpm", Some(json!(bpm))),
