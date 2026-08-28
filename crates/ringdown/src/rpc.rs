@@ -492,10 +492,11 @@ const VALUE: &[ParamKey] = &[req("value")];
 /// reproduce every recording's duration, and confirmed by the instrument's
 /// owner for a known take. See [`crate::loopfile`].
 ///
-/// One thing is still open, and it is about this method rather than about the
-/// fields: `ReadMetronome` returned `den: 8` from an instrument whose metronome
-/// its owner reports as 5/4. Until that is explained, a `den` written *here* has
-/// not been shown to round-trip, even though its meaning is no longer in doubt.
+/// **`den` is accepted and ignored.** Four hardware writes moved it nowhere —
+/// up, down, and to values the instrument's own menu offers — while the call
+/// returned `true` every time. `bpm` and `num` both apply. Send `den` only if a
+/// later firmware starts honouring it; `ReadMetronome` reports it correctly, so
+/// a caller can always tell what the instrument is actually set to.
 const METRONOME: &[ParamKey] = &[req("bpm"), opt("num"), opt("den"), opt("bars")];
 
 const RECORDING: &[ParamKey] = &[req("free")];
@@ -645,11 +646,11 @@ pub mod params {
     /// Absent values are omitted rather than sent as `null`, so the instrument
     /// keeps whatever it had for them.
     ///
-    /// **`den` has not been shown to round-trip.** `ReadMetronome` reported
-    /// `den: 8` from an instrument its owner reports as being in 5/4, which is
-    /// an unexplained discrepancy in that *method* rather than in the field's
-    /// meaning. A caller writing a full time signature should read it back and
-    /// check the instrument's own display until that is settled.
+    /// **`den` does nothing.** The instrument accepts it, returns `true`, and
+    /// leaves the denominator where it was — confirmed over four writes in
+    /// both directions, including to values its own menu offers. `bpm` and
+    /// `num` apply normally, and `ReadMetronome` reports the true state, so
+    /// the denominator is readable but only settable on the guitar itself.
     pub fn metronome(bpm: i64, num: Option<i64>, den: Option<i64>, bars: Option<i64>) -> Value {
         object(&[
             ("bpm", Some(json!(bpm))),

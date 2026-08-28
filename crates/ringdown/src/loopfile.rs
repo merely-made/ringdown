@@ -53,20 +53,13 @@
 //! 12 and 4 bars of it. The owner confirms the latter for `loop0031`, and the
 //! field that moves often is the bar count.
 //!
-//! # A discrepancy that belongs to `ReadMetronome`, not here
-//!
 //! `beat_unit` is `8` on 28 loops and `4` on three, and reads as a denominator
-//! throughout — most of these loops are in 4/8, three in 4/4, three in 7/8.
-//!
-//! That sits awkwardly against one live reading: `ReadMetronome` returned
-//! `{"bpm":60,"den":8,"num":5}` from an instrument whose metronome its owner
-//! reports as 5/4. Since the loop files settle what the field *means*, the
-//! discrepancy is in that observation rather than in the interpretation — a
-//! stale reading, a different state, or a mistranscription. It is recorded as
-//! an open question against `ReadMetronome` and does not qualify anything here.
-//!
-//! `beat_unit` does not enter the duration arithmetic; it only says what note
+//! throughout — most of these loops are in 4/8, three in 4/4, three in 7/8. It
+//! does not enter the duration arithmetic; it only says what note
 //! [`tempo_bpm`](LoopMeta::tempo_bpm) counts.
+//!
+//! `ReadMetronome` reports the same field, and reports it correctly. What
+//! `UpdateMetronome` will not do is *write* it — see [`crate::rpc::params`].
 
 use core::fmt;
 

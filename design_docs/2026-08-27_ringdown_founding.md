@@ -649,6 +649,47 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H23 — `UpdateMetronome` silently ignores `den`. `ReadMetronome` was always
+right.** (2026-08-28, against H2-CC340, with the owner reading the instrument's
+own display at each step.)
+
+Run properly this time: the owner set a deliberately unusual signature, the
+wire was read, a write was made, and the wire *and* the display were both read
+again — instead of comparing one reading to a display observed at a different
+moment.
+
+| step | wire | display |
+|---|---|---|
+| owner sets 11/16 at 86 | `{"bpm":86,"den":16,"num":11}` | 11/16, 86 |
+| write `bpm 93, num 10, den 32` → `true` | `{"bpm":93,"den":16,"num":10}` | 93, 10/16 |
+| write `bpm 93, num 10, den 8` → `true` | `{"bpm":93,"den":16,"num":10}` | — |
+
+**`bpm` and `num` apply. `den` never moves, and the call returns `true`
+anyway.** Neither direction nor range explains it: 8 is the denominator 28 of
+this instrument's loops use, and the owner confirms 32 is a selectable setting
+on the guitar's own menu. `UpdateMetronome` simply does not write this field.
+
+`ReadMetronome`, by contrast, returned 11/16 exactly — an unusual signature that
+cannot arrive by accident, so the read path is confirmed sound.
+
+**This retracts the anomaly H22 and two design docs were built around.** There
+was no discrepancy between the wire and the instrument. The original comparison
+took a `ReadMetronome` result at one moment, then compared it against a display
+state after the setting had been changed for a test, without re-reading. The
+guitar was correct every time; the reading was stale. The owner said as much at
+the time — *"it was 5/4 before and it was 5/4 after"* — and that was recorded in
+these docs as `den: 4` having been applied, which never happened.
+
+The lesson is the one the workspace already has a rule for: an observation is
+evidence about the moment it was taken. Two readings separated by a change are
+two different experiments, and treating them as one manufactured a firmware
+mystery that cost several sessions.
+
+**What stands:** `den` is the time signature's denominator, readable over the
+protocol and settable only on the instrument itself. Woodshed still sends only
+`bpm` and `num`, now because a `den` write does nothing rather than because
+anything is unknown.
+
 **H22 — The loop header is a time signature, a bar count and a completion flag,
 read across the whole library.** (2026-08-28, `probe --index` against
 H2-CC340 — 31 headers, one round trip each, about a minute of instrument time.)
@@ -694,18 +735,14 @@ The first is the instructive one. A single sample is consistent with every
 block size that happens to divide it, and the largest such divisor looks like
 the answer. Reading 31 headers cost a minute and settled it.
 
-**`den` is a denominator after all, and the contradiction is elsewhere.** The
-earlier reading rejected that because `ReadMetronome` reported `den: 8` from an
-instrument its owner confirms was in 5/4. The loop files settle the meaning; the
-discrepancy therefore belongs to `ReadMetronome`, and it has company —
-`UpdateMetronome` accepted `den: 4` and then refused to put `den: 8` back, while
-the instrument's display never moved off 5/4 in either direction. **Two methods
-that mishandle a field is a smaller and more testable claim than a field nobody
-understands**, and it leaves woodshed's refusal to write `den` standing on a
-better reason than the one it had.
+**`den` is a denominator, and there was never a contradiction.** The earlier
+reading rejected that on a comparison between a `ReadMetronome` result and a
+display state — but the two were observed at different times, with the setting
+changed in between, and no second read was taken. The instrument reported
+correctly throughout. The "field nobody understands" that two design docs were
+built around was an artefact of comparing a stale reading to a later display.
 
-Settling it needs one experiment: write a known time signature, read it back,
-and compare both against the guitar's own display.
+See H23, which tested this properly.
 
 **H20 — SUPERSEDED by H22. The loop header's `200` is a tempo, and a loop's
 metadata costs one round trip rather than ten minutes.** (2026-08-28, desk work
@@ -736,9 +773,11 @@ inferred meaning is the exact error that `den` was, and that one cost a write
 to the owner's instrument; a positional name that looks unfinished is the
 cheaper mistake.
 
-`8` remains unexplained, with one suggestive coincidence: `ReadMetronome` on
-this instrument returns `den: 8` while its metronome is demonstrably in 5/4. Two
-unexplained 8s on the same device are more likely one field than two.
+~~`8` remains unexplained, with one suggestive coincidence: `ReadMetronome` on
+this instrument returns `den: 8` while its metronome is demonstrably in 5/4.~~
+**Wrong on both halves — see H22 and H23.** `8` is the time signature's
+denominator, and the `ReadMetronome` "coincidence" was a stale reading compared
+against a later display.
 
 **The consequence is larger than the puzzle.** `DumpFile` takes an offset and a
 size (H14), so a loop's header is **one round trip of 92 bytes**. Retrieving a
@@ -1259,12 +1298,17 @@ elsewhere, not queries that return it. Testable with `GetFileInfo`.
 `ReadMetronome` returning `{"bpm":60,"den":8,"num":5}` is live instrument state
 and confirms the metronome parameter *names* from F13 against hardware.
 
-**Corrected 2026-08-27: this is not "5/8".** Reading `den` as a time-signature
-denominator was an interpretation, and hardware later disproved it — the
-instrument's own display read **5/4** both before and after `den` was changed
-from 8 to 4. `num` is the numerator and round-trips; `den` is something else
-and does not. See woodshed's smart-instrument plan for the full account, and
-do not write `den`.
+~~**Corrected 2026-08-27: this is not "5/8".**~~ **Retracted 2026-08-28 — that
+"correction" was itself the error. See H23.** `den` *is* the denominator, so
+this reading is 5/8 and the instrument was in 5/8 when it was taken. The
+display that read 5/4 was observed later, after the setting had been changed
+for a test and without a second read, so the two were never comparable. `den`
+was never changed from 8 to 4 by anything sent here; the instrument was already
+at 4 by the time that was checked.
+
+`num` and `den` are both the time signature, and `ReadMetronome` reports both
+correctly. What does not work is *writing* `den`, which `UpdateMetronome`
+accepts and discards.
 
 **H8 — The device reports unknown methods, which makes the dictionary
 testable.** `GetLevels` — one of the nineteen names the keyword dictionary
