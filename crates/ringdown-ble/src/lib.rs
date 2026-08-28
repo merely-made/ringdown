@@ -103,6 +103,69 @@ pub enum TransportError {
     /// The connect-time version banner could not be parsed.
     #[error("device sent an unrecognised version banner: {0:?}")]
     BadBanner(String),
+
+    /// A reply arrived but was not the shape the method promises.
+    #[error("{0}")]
+    Shape(String),
+
+    /// A file arrived, but not intact.
+    #[error("file failed its checksum: device said {expected:#010x}, got {actual:#010x}")]
+    ChecksumMismatch {
+        /// What `GetFileInfo` reported.
+        expected: u32,
+        /// What the received bytes actually compute to.
+        actual: u32,
+    },
+}
+
+/// What the device knows about a stored file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileInfo {
+    /// Length in bytes.
+    pub size: u64,
+    /// The device's own checksum, in its CRC-32/MPEG-2 variant.
+    pub crc32: u32,
+}
+
+/// The largest single file read to attempt.
+///
+/// The reply is hex, so it carries two characters per byte, and it has to fit
+/// one notification. Two hundred bytes leaves room for the JSON envelope
+/// around it without probing for the exact ceiling.
+pub const MAX_FILE_CHUNK: usize = 200;
+
+// Hex doubles the payload, so a full chunk's reply is twice this many
+// characters and must still fit one notification at the negotiated write
+// length. Checked at compile time, since both sides are constants and a test
+// would only discover at runtime what the compiler can refuse outright.
+const _: () = assert!(MAX_FILE_CHUNK * 2 < ASSUMED_WRITE_LEN);
+
+/// Split `/Loops/loop0031.wav` into its stem, number and extension.
+///
+/// Returns `None` for a name that does not end in digits before its
+/// extension, since stepping such a name back is not meaningful.
+fn split_numbered(path: &str) -> Option<(&str, u32, &str)> {
+    let dot = path.rfind('.').unwrap_or(path.len());
+    let (body, ext) = path.split_at(dot);
+    let digits_start = body
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(i, _)| i)?;
+    let number = body[digits_start..].parse().ok()?;
+    Some((&body[..digits_start], number, ext))
+}
+
+/// Decode an uppercase or lowercase hex string.
+fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+        .collect()
 }
 
 /// Why a scanned device was taken to be a guitar.
@@ -579,6 +642,137 @@ impl Guitar {
         self.call(Method::ReadConfig, rpc::params::none()).await
     }
 
+    /// Size and checksum of a stored file.
+    pub async fn file_info(&mut self, name: &str) -> Result<FileInfo, TransportError> {
+        let reply = self
+            .call_named("GetFileInfo", serde_json::json!({ "name": name }))
+            .await?;
+        let field = |key: &str| -> Result<u64, TransportError> {
+            reply
+                .get(key)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| TransportError::Shape(format!("missing {key} in {reply}")))
+        };
+        Ok(FileInfo {
+            size: field("size")?,
+            crc32: field("crc32")? as u32,
+        })
+    }
+
+    /// The name the *next* recording will take.
+    ///
+    /// Named as the device names it, and deliberately not called
+    /// `last_recording_name`: with 31 loops on the instrument this returns
+    /// `loop0032.wav`, a file that does not exist yet. Asking `GetFileInfo`
+    /// about it fails, which is a confusing result if you believed the method
+    /// name. See [`Guitar::latest_recording_name`] for the one you can open.
+    pub async fn next_recording_name(&mut self) -> Result<String, TransportError> {
+        let reply = self
+            .call_named("GetLastRecordingName", rpc::params::none())
+            .await?;
+        reply
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| TransportError::Shape(format!("expected a path, got {reply}")))
+    }
+
+    /// The most recent recording that actually exists, or `None` if there is
+    /// none.
+    ///
+    /// Derived by stepping back from [`Guitar::next_recording_name`] and
+    /// confirming the file opens, because the device's own answer is one past
+    /// the end and arithmetic alone would only move the off-by-one rather than
+    /// remove it.
+    pub async fn latest_recording_name(&mut self) -> Result<Option<String>, TransportError> {
+        let next = self.next_recording_name().await?;
+        let Some((stem, number, ext)) = split_numbered(&next) else {
+            return Ok(None);
+        };
+        if number == 0 {
+            return Ok(None);
+        }
+        let candidate = format!("{stem}{:04}{ext}", number - 1);
+        match self.file_info(&candidate).await {
+            Ok(_) => Ok(Some(candidate)),
+            // A device error here means "no such file", which is an answer
+            // rather than a failure: there simply is no previous recording.
+            Err(TransportError::Rpc(rpc::RpcError::Device(_))) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read part of a file.
+    ///
+    /// `DumpFile` answers with the bytes as an uppercase hex string, so a
+    /// reply carries half as many bytes as it has characters. That doubling,
+    /// against a notification that must fit the MTU, is what caps a single
+    /// read at a couple of hundred bytes and makes a whole loop a long
+    /// transfer rather than a quick one.
+    pub async fn read_file_range(
+        &mut self,
+        name: &str,
+        offset: u64,
+        len: usize,
+    ) -> Result<Vec<u8>, TransportError> {
+        let reply = self
+            .call_named(
+                "DumpFile",
+                serde_json::json!({ "name": name, "offset": offset, "size": len }),
+            )
+            .await?;
+        let hex = reply
+            .as_str()
+            .ok_or_else(|| TransportError::Shape(format!("expected hex, got {reply}")))?;
+        decode_hex(hex).ok_or_else(|| {
+            TransportError::Shape(format!("reply was not hex ({} chars)", hex.len()))
+        })
+    }
+
+    /// Read a whole file, verifying it against the checksum the device reports.
+    ///
+    /// `progress` is called with (bytes so far, total) after each chunk, since
+    /// a multi-megabyte loop takes minutes over this transport and a silent
+    /// wait is indistinguishable from a hang.
+    ///
+    /// The checksum is the device's own (`CRC-32/MPEG-2`, see
+    /// [`ringdown::crc32`]) and is verified over the assembled file. A
+    /// transfer that arrives corrupt fails here rather than being written to
+    /// disk and discovered later.
+    pub async fn read_file(
+        &mut self,
+        name: &str,
+        chunk: usize,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<Vec<u8>, TransportError> {
+        let info = self.file_info(name).await?;
+        let chunk = chunk.clamp(1, MAX_FILE_CHUNK);
+        let mut out = Vec::with_capacity(info.size as usize);
+
+        while (out.len() as u64) < info.size {
+            let remaining = info.size - out.len() as u64;
+            let want = core::cmp::min(remaining, chunk as u64) as usize;
+            let piece = self.read_file_range(name, out.len() as u64, want).await?;
+            if piece.is_empty() {
+                return Err(TransportError::Shape(format!(
+                    "device returned nothing at offset {} of {}",
+                    out.len(),
+                    info.size
+                )));
+            }
+            out.extend_from_slice(&piece);
+            progress(out.len() as u64, info.size);
+        }
+
+        let actual = ringdown::crc32::compute(&out);
+        if actual != info.crc32 {
+            return Err(TransportError::ChecksumMismatch {
+                expected: info.crc32,
+                actual,
+            });
+        }
+        Ok(out)
+    }
+
     /// Disconnect cleanly.
     pub async fn disconnect(&self) -> Result<(), TransportError> {
         self.peripheral.disconnect().await?;
@@ -752,6 +946,32 @@ pub const ASSUMED_WRITE_LEN: usize = 514;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_numbered_recording_splits_for_stepping_back() {
+        let (stem, n, ext) = split_numbered("/Loops/loop0032.wav").unwrap();
+        assert_eq!(stem, "/Loops/loop");
+        assert_eq!(n, 32);
+        assert_eq!(ext, ".wav");
+        // Reassembling one back is the whole point: the device reports the
+        // next name, and the latest existing one is beneath it.
+        assert_eq!(format!("{stem}{:04}{ext}", n - 1), "/Loops/loop0031.wav");
+    }
+
+    #[test]
+    fn an_unnumbered_name_declines_rather_than_guessing() {
+        assert!(split_numbered("/Loops/take.wav").is_none());
+        assert!(split_numbered("/Loops/").is_none());
+    }
+
+    #[test]
+    fn hex_replies_decode_and_bad_ones_are_refused() {
+        // The opening of a real reply: "RIFF".
+        assert_eq!(decode_hex("52494646").unwrap(), b"RIFF");
+        assert_eq!(decode_hex("").unwrap(), Vec::<u8>::new());
+        assert!(decode_hex("52494").is_none(), "odd length is not hex");
+        assert!(decode_hex("52ZZ4646").is_none(), "non-hex digits");
+    }
 
     #[test]
     fn the_uuid_constants_parse() {

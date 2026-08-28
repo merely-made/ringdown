@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 
-use ringdown_ble::{Guitar, MatchedBy, TransportError, discover};
+use ringdown_ble::{Guitar, MAX_FILE_CHUNK, MatchedBy, TransportError, discover};
 
 struct Args {
     scan: Duration,
@@ -36,6 +36,8 @@ struct Args {
     files: Option<String>,
     transport: Option<ringdown_ble::Transport>,
     timeout: Option<u64>,
+    fetch: Option<String>,
+    fetch_bytes: Option<usize>,
 }
 
 /// Parse call parameters as JSON, or as comma-separated `key=value` pairs.
@@ -143,6 +145,8 @@ fn parse_args() -> Result<Args, String> {
         files: None,
         transport: None,
         timeout: None,
+        fetch: None,
+        fetch_bytes: None,
     };
     let mut argv = std::env::args().skip(1).peekable();
     while let Some(arg) = argv.next() {
@@ -186,6 +190,13 @@ fn parse_args() -> Result<Args, String> {
                 let v = argv.next().ok_or("--timeout needs seconds")?;
                 args.timeout = Some(v.parse().map_err(|_| "--timeout isn't a number")?);
             }
+            "--fetch" => {
+                args.fetch = Some(argv.next().ok_or("--fetch needs a path, or 'latest'")?);
+            }
+            "--fetch-bytes" => {
+                let v = argv.next().ok_or("--fetch-bytes needs a number")?;
+                args.fetch_bytes = Some(v.parse().map_err(|_| "--fetch-bytes isn't a number")?);
+            }
             "--dirs" => args.dirs = true,
             "--files" => {
                 args.files = Some(argv.next().ok_or("--files needs a directory")?);
@@ -224,6 +235,11 @@ ringdown-probe — confirm the recovered HyVibe protocol against a real guitar
                      Read-only. e.g. --files /Calibration
   --transport <t>    force llt or llt2 rather than choosing by firmware version
   --timeout <secs>   how long to wait for a reply (default 10)
+  --fetch <path>     download a recording off the device and save it. Use
+                     'latest' for the most recent. Verified against the
+                     device's own checksum.
+  --fetch-bytes <n>  fetch only the first n bytes (skips the checksum, which
+                     can only be verified over a whole file)
   --trace            print every notification as it arrives
   --diagnose         if GetStatus is unanswered, try candidate encodings and
                      report which, if any, the device replies to
@@ -425,6 +441,10 @@ async fn session(guitar: &mut Guitar, args: &Args) -> Result<(), TransportError>
         probe_directories(guitar).await;
     }
 
+    if let Some(target) = args.fetch.as_deref() {
+        fetch_recording(guitar, target, args.fetch_bytes).await?;
+    }
+
     if let Some(dir) = args.files.as_deref() {
         probe_files(guitar, dir).await;
     }
@@ -581,6 +601,110 @@ async fn probe_files(guitar: &mut Guitar, dir: &str) {
     if hits.is_empty() {
         println!("        The directory is there and holds none of these names. Either its");
         println!("        contents follow a convention not guessed here, or it is empty.");
+    }
+}
+
+/// Pull a recording off the instrument and write it to disk.
+///
+/// The vendor offers this only over USB mass storage, so it is one of the
+/// things a desktop client earns outright. It is slow: replies are hex, which
+/// doubles every byte, and one reply carries about two hundred bytes of file.
+/// A multi-megabyte loop is therefore minutes rather than seconds, which is
+/// why progress is reported rather than left to a silent wait.
+async fn fetch_recording(
+    guitar: &mut Guitar,
+    target: &str,
+    partial: Option<usize>,
+) -> Result<(), TransportError> {
+    println!(
+        "
+[extra] fetching a recording"
+    );
+
+    let name = if target == "latest" {
+        match guitar.latest_recording_name().await? {
+            Some(name) => {
+                println!("        latest existing recording: {name}");
+                name
+            }
+            None => {
+                println!("        the device reports no recording that can be opened");
+                return Ok(());
+            }
+        }
+    } else {
+        target.to_string()
+    };
+
+    let info = guitar.file_info(&name).await?;
+    println!(
+        "        {name}: {} bytes, device checksum {:#010x}",
+        info.size, info.crc32
+    );
+
+    if let Some(n) = partial {
+        // A range cannot be checksummed, so this is for looking rather than
+        // for keeping, and says so.
+        let bytes = guitar
+            .read_file_range(&name, 0, n.min(MAX_FILE_CHUNK))
+            .await?;
+        println!(
+            "        first {} bytes (checksum not verifiable on a range):",
+            bytes.len()
+        );
+        print_hexdump(&bytes);
+        return Ok(());
+    }
+
+    let started = std::time::Instant::now();
+    let mut last_report = 0u64;
+    let bytes = guitar
+        .read_file(&name, MAX_FILE_CHUNK, |done, total| {
+            // Report on every whole percent rather than every chunk, which
+            // would be thousands of lines.
+            let pct = done * 100 / total.max(1);
+            if pct != last_report {
+                last_report = pct;
+                eprint!("\r        {pct}% ({done}/{total} bytes)");
+            }
+        })
+        .await?;
+    eprintln!();
+
+    println!(
+        "        CHECKSUM VERIFIED — {} bytes in {:.1}s",
+        bytes.len(),
+        started.elapsed().as_secs_f64()
+    );
+
+    let out = name.rsplit('/').next().unwrap_or("recording.wav");
+    match std::fs::write(out, &bytes) {
+        Ok(()) => println!("        wrote {out}"),
+        Err(e) => println!("        could not write {out}: {e}"),
+    }
+    print_hexdump(&bytes[..bytes.len().min(64)]);
+    Ok(())
+}
+
+/// Print bytes as hex and ASCII, so a WAV header identifies itself.
+fn print_hexdump(bytes: &[u8]) {
+    for (row, chunk) in bytes.chunks(16).enumerate() {
+        let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+        let ascii: String = chunk
+            .iter()
+            .map(|&b| {
+                if (0x20..0x7f).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        println!(
+            "          {:04x}  {:<47}  |{ascii}|",
+            row * 16,
+            hex.join(" ")
+        );
     }
 }
 
