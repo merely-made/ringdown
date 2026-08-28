@@ -616,6 +616,39 @@ bonding is ever required, and the effect catalog itself — all reachable now vi
 `--config`, since `ReadConfig` is the first request likely to exceed the MTU in
 both directions.
 
+**H21 — The params shapes are bound for all 32 methods, and binding them found
+an absent optional being sent as `null`.** (2026-08-28, desk work.)
+
+`rpc::param_shape` declares every method's `params` keys and which are
+required, read from the vendor's `*Params` classes (F13). It is a `match`
+without a wildcard arm, so a method added to the table cannot compile until its
+shape is declared — the same anti-drift discipline that generates the wire
+names. A test then checks each `params::*` constructor against its declaration:
+every key emitted must be declared, and every required key must be emitted.
+That is what makes the table load-bearing rather than decorative.
+
+**One method is `Unrecovered` rather than described: `SetConfig`.** It plainly
+takes a configuration, and the call whose reply would show its shape is
+`ReadConfig`, which wedges the firmware (H18). Recording that as a distinct
+state matters, because "takes nothing" and "we do not know what it takes" look
+identical at a call site and are opposite facts.
+
+**The gap the pass found.** `params::metronome(bpm, num, None, None)` was
+building its object with `json!`, which renders an absent `Option` as `null`.
+So every metronome write sent **`"den": null`** — including both writes in the
+W2 hardware run — while `woodshed-instrument` documented itself as never
+writing `den`. The stated invariant and the wire disagreed. No harm resulted;
+the reference instrument was in 5/4 before and after, as its owner confirmed.
+But omission and `null` are different messages — one says "leave this alone",
+the other says "set it to nothing" — and the intended one was never being sent.
+`params` now builds objects by insertion and leaves absent optionals out, which
+also fixes `set_controller`'s `min`/`max` and `sustain_killer`'s
+`killed`/`reset`.
+
+Worth noting how it was found: not by testing, but by writing down what each
+method's parameters *are* and comparing that to what the code emits. The
+declaration was the instrument.
+
 **H20 — The loop header's `200` is a tempo, and a loop's metadata costs one
 round trip rather than ten minutes.** (2026-08-28, desk work against the
 already-retrieved `loop0031.wav`; no instrument involved.)

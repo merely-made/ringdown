@@ -345,14 +345,182 @@ impl core::fmt::Display for RpcError {
 
 impl core::error::Error for RpcError {}
 
+/// One key in a method's `params` object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParamKey {
+    /// The wire spelling, which is terse and not uniform — see F13.
+    pub name: &'static str,
+    /// Whether every call must carry it.
+    ///
+    /// An optional key is one the vendor's client leaves out entirely rather
+    /// than sending as `null`, and [`params`] follows that: omission means
+    /// "leave this alone", where `null` would be a value.
+    pub required: bool,
+}
+
+const fn req(name: &'static str) -> ParamKey {
+    ParamKey {
+        name,
+        required: true,
+    }
+}
+
+const fn opt(name: &'static str) -> ParamKey {
+    ParamKey {
+        name,
+        required: false,
+    }
+}
+
+/// The shape of a method's `params`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamShape {
+    /// Takes no arguments. Send `{}`.
+    None,
+    /// An object with these keys.
+    Object(&'static [ParamKey]),
+    /// The method exists but its parameters were never recovered.
+    ///
+    /// Distinct from [`ParamShape::None`] on purpose: "takes nothing" and "we
+    /// do not know what it takes" look identical at a call site and are
+    /// opposite facts. `SetConfig` is the live example — it certainly takes a
+    /// configuration, and `ReadConfig` wedging the firmware (H18) means the
+    /// shape it would mirror has never been seen.
+    Unrecovered,
+}
+
+/// What `params` a method expects.
+///
+/// Bound method by method from the vendor's `*Params` classes and their
+/// `@SerialName` annotations (F13). This is the Phase 2 done-condition "every
+/// method's params shape is bound", and it is a `match` without a wildcard
+/// arm so that **adding a method to the table cannot compile until its shape
+/// is declared here too** — the same anti-drift discipline that generates the
+/// wire names from one table.
+///
+/// A declaration here is what the vendor's client sends, not proof the
+/// firmware accepts it. Only the methods marked hardware-verified in the
+/// founding doc's Findings have been exercised.
+pub fn param_shape(method: Method) -> ParamShape {
+    use Method::*;
+    match method {
+        // -- System --
+        GetStatus | GetVersion => ParamShape::None,
+        SetDate => ParamShape::Object(DATE),
+        Calibrate => ParamShape::None,
+
+        // -- Configuration --
+        ReadConfig | SaveConfig => ParamShape::None,
+        SetConfig => ParamShape::Unrecovered,
+
+        // -- Banks --
+        ReadBank | SwitchBank | RemoveBank => ParamShape::Object(BANK),
+        AddBank => ParamShape::Object(ADD_BANK),
+        MoveBank => ParamShape::Object(MOVE_BANK),
+        SetBankName => ParamShape::Object(BANK_NAME),
+        SetGainBank => ParamShape::Object(BANK_GAIN),
+
+        // -- Effects --
+        AddEffect => ParamShape::Object(ADD_EFFECT),
+        UpdateEffect => ParamShape::Object(UPDATE_EFFECT),
+        RemoveEffect => ParamShape::Object(EFFECT),
+        MoveEffect => ParamShape::Object(MOVE_EFFECT),
+        SetController => ParamShape::Object(CONTROLLER),
+
+        // -- Equalizer --
+        SetEqGain => ParamShape::Object(EQ_GAIN),
+        SetEqBandGain => ParamShape::Object(EQ_BAND_GAIN),
+
+        // -- Aux routing --
+        AuxIn | AuxOut => ParamShape::Object(TOGGLE),
+        AuxInDryWet | AuxOutDryWet => ParamShape::Object(VALUE),
+
+        // -- Metronome --
+        StartMetronome | UpdateMetronome => ParamShape::Object(METRONOME),
+        StopMetronome => ParamShape::None,
+
+        // -- Recording --
+        StartRecording => ParamShape::Object(RECORDING),
+        StopRecording => ParamShape::None,
+
+        // -- Other --
+        SustainKiller => ParamShape::Object(SUSTAIN_KILLER),
+        GetFileInfo => ParamShape::Object(FILE),
+    }
+}
+
+const DATE: &[ParamKey] = &[
+    req("year"),
+    req("month"),
+    req("day"),
+    req("hour"),
+    req("minute"),
+    req("second"),
+];
+
+const BANK: &[ParamKey] = &[req("bank_num")];
+const ADD_BANK: &[ParamKey] = &[req("bank_num"), req("bank")];
+/// Banks reorder with `src`/`dst` where effects use `effect_num`/`effect_dest`.
+/// The inconsistency is the vendor's and is preserved rather than smoothed.
+const MOVE_BANK: &[ParamKey] = &[req("src"), req("dst")];
+const BANK_NAME: &[ParamKey] = &[req("bank_num"), req("name")];
+const BANK_GAIN: &[ParamKey] = &[req("bank_num"), req("gain")];
+
+const ADD_EFFECT: &[ParamKey] = &[req("bank_num"), req("effect")];
+const UPDATE_EFFECT: &[ParamKey] = &[req("bank_num"), req("effect_num"), req("effect")];
+const EFFECT: &[ParamKey] = &[req("bank_num"), req("effect_num")];
+const MOVE_EFFECT: &[ParamKey] = &[req("bank_num"), req("effect_num"), req("effect_dest")];
+const CONTROLLER: &[ParamKey] = &[
+    req("bank_num"),
+    req("effect_num"),
+    req("parameter"),
+    req("source"),
+    opt("min"),
+    opt("max"),
+];
+
+const EQ_GAIN: &[ParamKey] = &[req("gain")];
+const EQ_BAND_GAIN: &[ParamKey] = &[req("band"), req("gain")];
+
+const TOGGLE: &[ParamKey] = &[req("toggle")];
+const VALUE: &[ParamKey] = &[req("value")];
+
+/// `num` is beats per bar. **`den` is not a time-signature denominator** — the
+/// reference instrument reports `den: 8` while its metronome is demonstrably in
+/// 5/4 — so what it means is unestablished. It is declared because the wire
+/// carries it; callers who care about their tempo should leave it out.
+const METRONOME: &[ParamKey] = &[req("bpm"), opt("num"), opt("den"), opt("bars")];
+
+const RECORDING: &[ParamKey] = &[req("free")];
+const SUSTAIN_KILLER: &[ParamKey] = &[req("bank_num"), opt("killed"), opt("reset")];
+const FILE: &[ParamKey] = &[req("name")];
+
 /// Builders for each method's arguments.
 ///
 /// The wire keys are terse and inconsistent (`bank_num`, `effect_num`, `src`,
 /// `dst`), so these exist to keep that vocabulary in one place rather than
-/// spread across call sites as string literals.
+/// spread across call sites as string literals. Each is checked against
+/// [`param_shape`] by test, so a constructor cannot drift from the declared
+/// shape without something failing.
 pub mod params {
     use super::*;
     use serde_json::json;
+
+    /// Build an object, leaving out the keys whose value is absent.
+    ///
+    /// Omission and `null` are different messages: one says "leave this as it
+    /// is", the other says "set it to nothing". `serde_json::json!` renders an
+    /// absent `Option` as `null`, so building these by hand would quietly send
+    /// the second while meaning the first.
+    fn object(fields: &[(&str, Option<Value>)]) -> Value {
+        let mut map = serde_json::Map::new();
+        for (key, value) in fields {
+            if let Some(value) = value {
+                map.insert((*key).to_string(), value.clone());
+            }
+        }
+        Value::Object(map)
+    }
 
     /// No arguments.
     pub fn none() -> Value {
@@ -425,6 +593,9 @@ pub mod params {
     }
 
     /// Bind a physical control to an effect parameter, with its own range.
+    ///
+    /// An absent `min` or `max` is left out rather than sent as `null`, so the
+    /// instrument keeps whatever range it already had.
     pub fn set_controller(
         bank_num: i64,
         effect_num: i64,
@@ -433,19 +604,23 @@ pub mod params {
         min: Option<f32>,
         max: Option<f32>,
     ) -> Value {
-        json!({
-            "bank_num": bank_num,
-            "effect_num": effect_num,
-            "parameter": parameter,
-            "source": source,
-            "min": min,
-            "max": max,
-        })
+        object(&[
+            ("bank_num", Some(json!(bank_num))),
+            ("effect_num", Some(json!(effect_num))),
+            ("parameter", Some(json!(parameter))),
+            ("source", Some(json!(source))),
+            ("min", min.map(|v| json!(v))),
+            ("max", max.map(|v| json!(v))),
+        ])
     }
 
     /// Sustain-killer state for a bank.
     pub fn sustain_killer(bank_num: i64, killed: Option<bool>, reset: Option<bool>) -> Value {
-        json!({ "bank_num": bank_num, "killed": killed, "reset": reset })
+        object(&[
+            ("bank_num", Some(json!(bank_num))),
+            ("killed", killed.map(|v| json!(v))),
+            ("reset", reset.map(|v| json!(v))),
+        ])
     }
 
     /// Start recording. `free` selects free-running rather than bar-locked.
@@ -453,11 +628,25 @@ pub mod params {
         json!({ "free": free })
     }
 
-    /// Metronome tempo and time signature.
+    /// Metronome tempo, and optionally its meter and loop length.
     ///
-    /// `num`/`den` are the time signature; `bars` is the loop length.
+    /// `num` is beats per bar. **`den` is not a time-signature denominator** —
+    /// the reference instrument reports `den: 8` while its metronome is
+    /// demonstrably in 5/4 — so what it does mean is unestablished and passing
+    /// `None` is the honest default. Absent values are omitted rather than
+    /// sent as `null`, so the instrument keeps what it had.
+    ///
+    /// The wrong reading of `den` was written into a client once, and the
+    /// resulting write went to a real instrument before anyone checked. The
+    /// parameter stays exposed because the wire carries it; the documentation
+    /// is what changed.
     pub fn metronome(bpm: i64, num: Option<i64>, den: Option<i64>, bars: Option<i64>) -> Value {
-        json!({ "bpm": bpm, "num": num, "den": den, "bars": bars })
+        object(&[
+            ("bpm", Some(json!(bpm))),
+            ("num", num.map(|v| json!(v))),
+            ("den", den.map(|v| json!(v))),
+            ("bars", bars.map(|v| json!(v))),
+        ])
     }
 
     /// Set the instrument's clock.
@@ -755,5 +944,188 @@ mod tests {
             rebuilt.push_str(v["d"].as_str().unwrap());
         }
         assert_eq!(rebuilt, encoded);
+    }
+
+    /// Every method's params shape is declared, and the declarations are not
+    /// all the same. A table that had quietly collapsed to "everything takes
+    /// nothing" would still satisfy an exhaustive match, so check that it
+    /// carries real distinctions.
+    #[test]
+    fn the_shape_table_covers_every_method_with_variety() {
+        let mut nones = 0;
+        let mut objects = 0;
+        let mut unrecovered = 0;
+        for &m in Method::ALL {
+            match param_shape(m) {
+                ParamShape::None => nones += 1,
+                ParamShape::Object(keys) => {
+                    assert!(!keys.is_empty(), "{m:?} declares an object with no keys");
+                    objects += 1;
+                }
+                ParamShape::Unrecovered => unrecovered += 1,
+            }
+        }
+        assert_eq!(nones + objects + unrecovered, Method::ALL.len());
+        assert!(nones > 0 && objects > 0, "the table lost its distinctions");
+        // SetConfig is the one method whose shape was never recovered, because
+        // ReadConfig — the call whose reply would show it — wedges the
+        // firmware. If this becomes 0 the shape was found; if it grows,
+        // something was demoted and the Findings should say why.
+        assert_eq!(unrecovered, 1, "exactly SetConfig should be unrecovered");
+        assert_eq!(param_shape(Method::SetConfig), ParamShape::Unrecovered);
+    }
+
+    /// No key is declared twice for one method, which a hand-written table
+    /// makes easy to do and hard to see.
+    #[test]
+    fn no_method_declares_a_duplicate_key() {
+        for &m in Method::ALL {
+            if let ParamShape::Object(keys) = param_shape(m) {
+                for (i, a) in keys.iter().enumerate() {
+                    for b in &keys[i + 1..] {
+                        assert_ne!(a.name, b.name, "{m:?} declares {} twice", a.name);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The constructors in [`params`] must produce what the table says.
+    ///
+    /// This is what makes the table load-bearing rather than decorative: a
+    /// constructor and its declaration live in two places and drift silently
+    /// otherwise. Every key a constructor emits must be declared, and every
+    /// required key must be emitted.
+    #[test]
+    fn every_constructor_matches_its_declared_shape() {
+        let cases: alloc::vec::Vec<(Method, Value)> = alloc::vec![
+            (Method::GetStatus, params::none()),
+            (Method::GetVersion, params::none()),
+            (Method::Calibrate, params::none()),
+            (Method::ReadConfig, params::none()),
+            (Method::SaveConfig, params::none()),
+            (Method::StopMetronome, params::none()),
+            (Method::StopRecording, params::none()),
+            (Method::ReadBank, params::bank(0)),
+            (Method::SwitchBank, params::bank(3)),
+            (Method::RemoveBank, params::bank(2)),
+            (Method::AddBank, params::add_bank(1, serde_json::json!({}))),
+            (Method::MoveBank, params::move_bank(0, 1)),
+            (Method::SetBankName, params::bank_name(0, "Clean")),
+            (Method::SetGainBank, params::bank_gain(0, 0.5)),
+            (
+                Method::AddEffect,
+                params::add_effect(0, serde_json::json!({}))
+            ),
+            (
+                Method::UpdateEffect,
+                params::update_effect(0, 1, serde_json::json!({})),
+            ),
+            (Method::RemoveEffect, params::remove_effect(0, 1)),
+            (Method::MoveEffect, params::move_effect(0, 1, 2)),
+            (
+                Method::SetController,
+                params::set_controller(0, 1, "DryWet", "knob", Some(0.0), Some(1.0)),
+            ),
+            (
+                Method::SetController,
+                params::set_controller(0, 1, "DryWet", "knob", None, None),
+            ),
+            (Method::SetEqGain, params::eq_gain(0.0)),
+            (Method::SetEqBandGain, params::eq_band_gain(2, -3.0)),
+            (Method::AuxIn, params::toggle(true)),
+            (Method::AuxOut, params::toggle(false)),
+            (Method::AuxInDryWet, params::value(0.5)),
+            (Method::AuxOutDryWet, params::value(0.5)),
+            (
+                Method::StartMetronome,
+                params::metronome(120, Some(4), None, None),
+            ),
+            (
+                Method::UpdateMetronome,
+                params::metronome(96, None, None, None),
+            ),
+            (Method::StartRecording, params::start_recording(true)),
+            (
+                Method::SustainKiller,
+                params::sustain_killer(0, Some(true), None),
+            ),
+            (Method::SustainKiller, params::sustain_killer(0, None, None)),
+            (
+                Method::GetFileInfo,
+                params::file_info("/Loops/loop0001.wav")
+            ),
+            (Method::SetDate, params::date(2026, 8, 28, 12, 0, 0)),
+        ];
+
+        for (method, value) in &cases {
+            let object = value
+                .as_object()
+                .unwrap_or_else(|| panic!("{method:?} params are not an object: {value}"));
+            match param_shape(*method) {
+                ParamShape::None => assert!(
+                    object.is_empty(),
+                    "{method:?} takes nothing but was given {value}"
+                ),
+                ParamShape::Object(keys) => {
+                    for emitted in object.keys() {
+                        assert!(
+                            keys.iter().any(|k| k.name == emitted),
+                            "{method:?} emitted undeclared key {emitted}"
+                        );
+                    }
+                    for key in keys.iter().filter(|k| k.required) {
+                        assert!(
+                            object.contains_key(key.name),
+                            "{method:?} omitted required key {}",
+                            key.name
+                        );
+                    }
+                }
+                ParamShape::Unrecovered => {}
+            }
+        }
+    }
+
+    /// An absent optional is left out, not sent as `null`. Omission means
+    /// "leave it alone"; `null` is a value, and the two reach the firmware as
+    /// different requests.
+    #[test]
+    fn absent_optionals_are_omitted_rather_than_nulled() {
+        let m = params::metronome(120, None, None, None);
+        assert_eq!(m, serde_json::json!({ "bpm": 120 }));
+        assert!(!m.as_object().unwrap().contains_key("den"));
+
+        let sk = params::sustain_killer(4, None, None);
+        assert_eq!(sk, serde_json::json!({ "bank_num": 4 }));
+
+        let c = params::set_controller(0, 1, "DryWet", "knob", None, None);
+        assert!(!c.as_object().unwrap().contains_key("min"));
+
+        // Present ones still travel.
+        let full = params::metronome(96, Some(5), Some(8), Some(2));
+        assert_eq!(full.as_object().unwrap().len(), 4);
+    }
+
+    /// The two reorder methods use different key names for the same idea. It
+    /// reads like a bug and is not; pinning it stops a future tidy-up.
+    #[test]
+    fn bank_and_effect_reordering_keep_their_different_keys() {
+        assert_eq!(
+            param_shape(Method::MoveBank),
+            ParamShape::Object(&[
+                ParamKey {
+                    name: "src",
+                    required: true
+                },
+                ParamKey {
+                    name: "dst",
+                    required: true
+                },
+            ])
+        );
+        let effect = params::move_effect(0, 1, 2);
+        assert!(effect.get("effect_dest").is_some());
+        assert!(effect.get("dst").is_none());
     }
 }
