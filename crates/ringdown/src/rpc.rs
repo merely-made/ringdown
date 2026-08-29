@@ -538,6 +538,16 @@ pub mod params {
     }
 
     /// A bank, by index.
+    ///
+    /// A bank is one of the **nine presets in the instrument's front-panel
+    /// grid**, numbered 0–8 in the order they scroll. `SwitchBank` moves the
+    /// panel selection, hardware-confirmed. There is no scratch bank:
+    /// `bank_num: 0` is the player's first preset, and a write aimed there
+    /// edits something they use.
+    ///
+    /// Note that `ReadBank` answers `""` for every index, populated or not, so
+    /// it cannot be used to check whether a bank is empty — or to verify that a
+    /// write to one landed.
     pub fn bank(bank_num: i64) -> Value {
         json!({ "bank_num": bank_num })
     }

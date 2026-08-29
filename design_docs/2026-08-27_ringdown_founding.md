@@ -649,6 +649,54 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H25 — `SwitchBank` drives the instrument's preset grid, and the numbering is
+direct.** (2026-08-29, against H2-CC340, with the owner reading the panel.)
+
+The guitar's front panel shows a **3×3 grid of nine named presets**, scrolled
+through by name with no numbers displayed. `SwitchBank n` selects the nth of
+them, zero-indexed in grid order, confirmed twice:
+
+| `bank_num` | panel shows |
+|---|---|
+| 3 | `tremolo` |
+| 4 | `megaphone` |
+
+On the reference instrument the grid reads `rev, chorus, echo, tremolo,
+megaphone, boost, overdrive, disto, vintage` (seven of them edited by the
+owner). An "off" state exists but sits outside the bank numbering.
+
+**So "bank" is the panel preset, not an app-side store.** That corrects a
+working assumption held since H7 — that banks were Firebase-resident and the
+instrument held none, on the evidence that `ReadBank` returns `""`. It returns
+`""` for every bank including ones the panel plainly populates, so **`ReadBank`
+does not report bank contents at all**; its empty string says nothing about
+whether a bank is empty. Every inference drawn from "the instrument has no
+banks" is void.
+
+**A caution this cost.** `bank_num: 0` is the *first preset*, not a scratch
+slot — on this instrument, `rev`. Effect writes aimed at "an empty bank 0"
+were aimed at the owner's reverb preset.
+
+**H24b — `AddEffect` validates the effect type.** Swept all nineteen names
+from the keyword dictionary, each add paired with an immediate remove:
+
+- **Accepted (11):** `Chorus`, `Delay`, `Distortion`, `Equalizer`, `Highpass`,
+  `Lowpass`, `Notch`, `Phaser`, `Pitch`, `Reverb`, `Tremolo`
+- **Rejected (8):** `Boost`, `DelaySync`, `Disto`, `Echo`, `Octaver`, `Volume`,
+  `LFO`, `None`
+
+The rejections split cleanly: aliases whose canonical form is accepted (`Disto`
+vs `Distortion`, `DelaySync` vs `Delay`), things that are not chain effects
+(`None`, `LFO`), and gain stages (`Boost`, `Volume`) — `Boost` being rejected
+while sitting on the panel as a preset is the tell that preset names and effect
+types are different vocabularies. So the dictionary's nineteen is the app's
+superset; eleven is what this firmware will insert.
+
+**Accepted is not audible, and that is still open.** Every accepted add
+returned `true` and produced no sound and no FX indicator. Those writes went to
+bank 0 while the audible bank was elsewhere, so the audibility question was
+never cleanly tested and remains unanswered rather than answered negatively.
+
 **H23 — PARTIALLY SUPERSEDED by H24: the `ReadMetronome` half stands, the
 "ignores `den`" half was ringdown's own serialization.** (2026-08-28, against
 H2-CC340, with the owner reading the instrument's own display at each step.)
@@ -1682,3 +1730,17 @@ is the truth, whatever the APK said.
   which its own panel offers. Race, transform, compound-meter, den>num,
   transport-encoding and exponent-pow2 theories each killed by one targeted
   write. `--call pause` added to the probe for in-connection settle tests.
+- **2026-08-29 — preset switching works; the bank model was wrong (H25).** The
+  guitar's nine panel presets *are* the banks, numbered 0–8 in grid order, and
+  `SwitchBank` moves the panel selection — confirmed by the owner reading the
+  screen for two different indices. This voids the long-held assumption that
+  banks were app-side and the instrument held none; that came from `ReadBank`
+  returning `""`, which it does for every bank regardless of content. `ReadBank`
+  simply does not report bank contents.
+  - `AddEffect` validates the type: 11 of the dictionary's 19 names are
+    insertable, the rest being aliases, non-effects, or gain stages (H24b).
+  - Accepted adds still produced no sound, but they were aimed at bank 0 while
+    a different bank was audible, so audibility is untested rather than
+    disproved.
+  - Correction worth carrying: `bank_num: 0` is the owner's first preset, not
+    scratch space. Effect writes today went into their `rev`.
