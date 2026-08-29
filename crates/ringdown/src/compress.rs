@@ -550,6 +550,12 @@ pub fn decode(bytes: &[u8]) -> Option<String> {
     loop {
         match r.read4()? {
             block::END => return Some(out),
+            // A zero nibble in token position is padding, not a second START.
+            // The instrument emits one before the closing brace of at least
+            // some replies (captured from `ReadBank`), and rejecting it threw
+            // away a perfectly good message. Skipping it yields well-formed
+            // JSON; treating it as an error does not.
+            block::START => {}
             block::LEFT_BRACE => out.push('{'),
             block::RIGHT_BRACE => out.push('}'),
             block::LEFT_BRACKET => out.push('['),
@@ -848,5 +854,25 @@ mod tests {
     fn encode_error_messages_name_the_limit() {
         let e = EncodeError::NumberTooLong(20);
         assert!(e.to_string().contains("15"), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod captured_replies {
+    /// A real `ReadBank` reply, byte for byte off the instrument on
+    /// 2026-08-29. Ringdown rejected this for a stray zero nibble before the
+    /// closing brace and reported the call as unanswered, which read as the
+    /// device having gone silent. It had not.
+    const READBANK_REPLY: [u8; 30] = [
+        0x01, 0xb7, 0x6a, 0x73, 0x6f, 0x6e, 0x72, 0x70, 0x63, 0x4b, 0x33, 0x22, 0xe3, 0x03, 0xb2,
+        0x69, 0x64, 0x4e, 0x14, 0x3b, 0x67, 0x26, 0x57, 0x37, 0x56, 0xc7, 0x44, 0xb0, 0x02, 0xf0,
+    ];
+
+    #[test]
+    fn a_real_readbank_reply_decodes() {
+        assert_eq!(
+            super::decode(&READBANK_REPLY).expect("must decode"),
+            r#"{"jsonrpc":"2.0","id":4,"result":""}"#
+        );
     }
 }
