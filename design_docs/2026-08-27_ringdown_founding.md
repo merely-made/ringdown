@@ -1753,3 +1753,25 @@ is the truth, whatever the APK said.
     disproved.
   - Correction worth carrying: `bank_num: 0` is the owner's first preset, not
     scratch space. Effect writes today went into their `rev`.
+- **2026-09-01 — the transport is a seam now, not a weld.** `ringdown::link::Link`
+  is four methods (write, read the response characteristic, next notification
+  within a duration, disconnect); everything above it is transport-agnostic.
+  The driver moved out of `ringdown-ble` into `ringdown-client`, because while
+  it lived beside the btleplug code a CoreBluetooth or Web Bluetooth client had
+  to depend on btleplug to reach it — the dependency it was trying to escape.
+  `cargo tree -p ringdown-client` now shows zero btleplug, which is the
+  assertion that matters and is worth re-running if anyone touches the layout.
+  - Layout: `ringdown` (protocol + Link) → `ringdown-client` (`Guitar<L>`) →
+    `ringdown-ble` (discovery, connect, `BtleplugLink`, and a `Guitar` alias so
+    callers still write `Guitar`).
+  - `connect` became a free function in `ringdown-ble`: Rust forbids inherent
+    impls on a foreign type, and `Guitar` is foreign there now. Arguably where
+    it belonged — finding an instrument is the platform's job, driving one is
+    not.
+  - Deliberately absent from the trait: discovery, pairing, reconnection. They
+    differ enough between platforms that abstracting them now would produce a
+    trait shaped like whichever platform was written first.
+  - Two regressions the compiler could not catch, both found by review: moving
+    notification tracing into the link silently broke `--trace`, and the split
+    left discovery's tests in the crate that no longer had the functions.
+    Hardware-verified after each phase rather than only at the end.

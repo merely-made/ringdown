@@ -546,10 +546,21 @@ dependencies = [
  "btleplug",
  "futures",
  "ringdown",
+ "ringdown-client",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "ringdown-client"
+version = "0.0.1"
+dependencies = [
+ "ringdown",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

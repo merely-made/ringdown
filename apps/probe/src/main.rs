@@ -301,7 +301,7 @@ async fn run(args: Args) -> Result<(), TransportError> {
     }
 
     println!("\n[2/4] connecting to #0...");
-    let mut guitar = Guitar::connect(&found[0]).await?;
+    let mut guitar = ringdown_ble::connect(&found[0]).await?;
     if let Some(len) = args.write_len {
         guitar.set_write_len(len);
     }
@@ -1338,7 +1338,7 @@ fn advice(e: &TransportError) -> &'static str {
              This is a protocol-level disagreement about one method — much closer in\n\
              than a silent failure. Record the exact error."
         }
-        TransportError::Bluetooth(_) => {
+        TransportError::Link(_) => {
             "The Bluetooth stack refused the operation. If this was 'Not connected' during
              connect, the peripheral handle from the scan had gone stale, or the guitar
              dropped between being seen and being connected to — ringdown now retries
