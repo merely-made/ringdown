@@ -505,6 +505,79 @@ const RECORDING: &[ParamKey] = &[req("free")];
 const SUSTAIN_KILLER: &[ParamKey] = &[req("bank_num"), opt("killed"), opt("reset")];
 const FILE: &[ParamKey] = &[req("name")];
 
+/// One knob of an effect, as the wire carries it.
+///
+/// Field order is the wire order, and the wire is order-sensitive (H24), so
+/// this is a struct rather than a map: serde emits struct fields in
+/// declaration order whatever the map type does.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Parameter {
+    /// The knob's **full word**, not its panel label: `Gain`, `Volume`,
+    /// `Lowpass`, `Highpass` — where the app shows `GAIN`, `VOL`, `LP`, `HP`.
+    /// Matched case-insensitively. One key the firmware does not know refuses
+    /// the whole `AddEffect` (H29).
+    pub key: String,
+    /// In the knob's own units, unconverted: dB for gains, Hz for corner
+    /// frequencies. `Lowpass: 1800` is what the app displays as `1.8 kHz`.
+    pub value: f64,
+}
+
+/// An effect in a bank's chain, as the wire carries it.
+///
+/// Declaration order is wire order — `preset, type, bypass, params` — and
+/// must stay so (H24, H29).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Effect {
+    /// A named voicing of this type. `"default"` — lowercase, as the app
+    /// displays it — is always valid.
+    pub preset: String,
+    /// One of the thirteen the firmware implements (H28): `Chorus`,
+    /// `Compressor`, `Delay`, `Distortion`, `Equalizer`, `Gate`, `Highpass`,
+    /// `Lowpass`, `Notch`, `Phaser`, `Pitch`, `Reverb`, `Tremolo`.
+    /// `AddEffect` refuses any other name, reliably.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Loaded but switched off. Accepted by the firmware; whether it actually
+    /// silences the effect is not yet established by ear.
+    pub bypass: bool,
+    /// Knob overrides. Empty means "the preset's values" and is always
+    /// accepted; a partial list is accepted too. Must be present — `null` or
+    /// absent is refused (H26).
+    pub params: Vec<Parameter>,
+}
+
+impl Effect {
+    /// An effect of `kind` at its `default` preset with no overrides.
+    pub fn new(kind: &str) -> Effect {
+        Effect {
+            preset: String::from("default"),
+            kind: String::from(kind),
+            bypass: false,
+            params: Vec::new(),
+        }
+    }
+
+    /// Add a knob override.
+    pub fn with(mut self, key: &str, value: f64) -> Effect {
+        self.params.push(Parameter {
+            key: String::from(key),
+            value,
+        });
+        self
+    }
+
+    /// Load it switched off.
+    pub fn bypassed(mut self) -> Effect {
+        self.bypass = true;
+        self
+    }
+
+    /// The JSON the wire wants, fields in wire order.
+    pub fn to_value(&self) -> Value {
+        serde_json::to_value(self).expect("an Effect is always serialisable")
+    }
+}
+
 /// Builders for each method's arguments.
 ///
 /// The wire keys are terse and inconsistent (`bank_num`, `effect_num`, `src`,
@@ -1162,6 +1235,33 @@ mod tests {
             pos("bpm") < pos("num") && pos("num") < pos("den"),
             "alphabetized params regressed: {text}"
         );
+    }
+
+    /// The effect object must serialise in wire order, because the firmware
+    /// drops fields that arrive out of sequence. This is the exact four-knob
+    /// Distortion the instrument accepted on 2026-09-01 (H29).
+    #[test]
+    fn a_typed_effect_serialises_in_wire_order() {
+        let e = Effect::new("Distortion")
+            .with("Gain", 50.0)
+            .with("Volume", -25.0)
+            .with("Lowpass", 1800.0)
+            .with("Highpass", 94.0)
+            .bypassed();
+        let text = serde_json::to_string(&e.to_value()).unwrap();
+        assert_eq!(
+            text,
+            r#"{"preset":"default","type":"Distortion","bypass":true,"params":[{"key":"Gain","value":50.0},{"key":"Volume","value":-25.0},{"key":"Lowpass","value":1800.0},{"key":"Highpass","value":94.0}]}"#
+        );
+    }
+
+    /// An effect with no overrides still carries `params: []` — the one shape
+    /// the firmware accepts for "use the preset" (H26).
+    #[test]
+    fn a_bare_effect_still_sends_an_empty_params_array() {
+        let v = Effect::new("Tremolo").to_value();
+        assert_eq!(v["params"], serde_json::json!([]));
+        assert_eq!(v["preset"], "default");
     }
 
     /// The two reorder methods use different key names for the same idea. It

@@ -1993,3 +1993,11 @@ is the truth, whatever the APK said.
     notification tracing into the link silently broke `--trace`, and the split
     left discovery's tests in the crate that no longer had the functions.
     Hardware-verified after each phase rather than only at the end.
+- **2026-09-01 — the chain methods all answer `true` on slot 8.** `SetBankName`
+  (`"ringdown"`), `SustainKiller` (`killed: false, reset: false`), `MoveEffect`
+  (0 → 1), `UpdateEffect` (index 0 → a Tremolo) and `RemoveEffect` (index 1),
+  `GetStatus` fine after. By H27's rule none of these `true`s is evidence of a
+  change; the bank-name one is the only write here with a **panel** read-back,
+  and that observation is pending. Typed `Effect`/`Parameter` builders added
+  to `rpc` so wire order and the established vocabulary are enforced by the
+  compiler rather than remembered.
