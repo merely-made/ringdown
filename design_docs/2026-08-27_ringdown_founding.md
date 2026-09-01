@@ -649,6 +649,45 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H30 — Every effect's knobs, read off the app's editors.** (2026-09-01, the
+owner's screenshots of all thirteen editor screens at `Preset: default`.)
+
+This is the parameter vocabulary the app fetches from Firebase and the APK
+never contained. Labels are as displayed; defaults are the `default` preset.
+
+| Effect | Knobs (label: default) |
+|---|---|
+| Chorus | FREQ 3.0 Hz · DRY/WET 100 % |
+| Compressor | ATTACK 5.1 ms · RELEASE 55 ms · THRESHOLD −16.0 dB · RATIO 3.5:1 · DRY GAIN −100 dB · WET GAIN −8 dB |
+| Delay | SYNC (off) · TIME 450 ms · BPM 3/4 beat · LP 2.5 kHz · HP 52 Hz · FEEDBACK 34 % · DRY/WET 100 % |
+| Distortion | GAIN 50.0 dB · VOL −25.0 dB · LP 1.8 kHz · HP 94 Hz |
+| Equalizer | 100 · 200 · 400 · 600 · 1k · 2k · GAIN (seven sliders, 0–1) |
+| Gate | THRESHOLD −60 dB · RANGE −89 dB · RELEASE 200 ms · ATTACK 1.1 ms |
+| Highpass | FREQ 140 Hz · Q 0.7 |
+| Lowpass | FREQ 3.0 kHz · Q 0.7 |
+| Notch | FREQ 20 Hz · Q 1 |
+| Phaser | FREQ 0.4 Hz · FEEDBACK 68 % · DRY/WET 100 % |
+| Pitch | SHIFT −12 st |
+| Reverb | DECAY 25 % · DRY/WET 100 % |
+| Tremolo | FREQ 3.8 Hz |
+
+Three things the table settles before any wire test:
+
+- **The v1.1.2 keyword dictionary is the older half of this vocabulary.** Its
+  parameter names — `Frequency`, `DryWet`, `DelayTime`, `Feedback`, `Sync`,
+  `Q`, `Decay`, `Shift`, `Gain`, `GainBand1`–`6` — are these knobs for the
+  effects that existed then. `Compressor` and `Gate` have no dictionary
+  entries because they postdate that app, which is why their names had to
+  come from the screen.
+- **Labels abbreviate wire keys** (H29: `VOL` → `Volume`, `LP` → `Lowpass`),
+  so the table is the *display* layer; the wire layer is established per key
+  by the `AddEffect` oracle, which refuses an unknown key reliably.
+- **A chain holds four effects.** The owner's own two test banks show four
+  rows each and no "Add an effect" after the fourth. Whether the firmware
+  enforces the same cap or silently drops a fifth is a separate question
+  (H27), testable without ears: `RemoveEffect` at index 0 until it answers
+  `false` counts what the chain actually holds.
+
 **H29 — Effect parameters transmit. H26's "structural" verdict was wrong; it
 was vocabulary all along.** (2026-09-01, against H2-CC340 on the empty slot 8,
 every call read back as `true`/`false`; `GetStatus` control after each batch.)
