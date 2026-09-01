@@ -687,11 +687,23 @@ confirmation the recovered surface is complete:
 
 **Three findings this overturns:**
 
-1. **The effect catalog is not the keyword dictionary.** The app offers
-   **`Compressor`** and **`Gate`**, neither of which appears among the
-   dictionary's nineteen names. H24b's "11 insertable types" was a sweep of the
-   app's *string table*, not the firmware's catalog, and never tested these two.
-   At least thirteen types exist.
+1. **The effect catalog is exactly thirteen, and closed.** Captured top and
+   bottom with the scrollbar at each end: `Chorus`, `Compressor`, `Delay`,
+   `Distortion`, `Equalizer`, `Gate`, `Highpass`, `Lowpass`, `Notch`,
+   `Phaser`, `Pitch`, `Reverb`, `Tremolo`.
+
+   H24b's eleven accepted types are **exactly these thirteen minus `Compressor`
+   and `Gate`** — the two the keyword dictionary never carried, so the sweep
+   could not have tried them. And the eight it rejected (`Boost`, `Volume`,
+   `Echo`, `Octaver`, `Disto`, `DelaySync`, `LFO`, `None`) are precisely the
+   ones absent from the app's list.
+
+   **Zero false positives and zero false negatives on everything tested**,
+   which promotes `AddEffect`'s type validation to a *reliable membership
+   oracle* — worth distinguishing from the `true` it returns for `den`, which
+   means nothing. The dictionary was the flawed input: eight junk names,
+   two real ones missing. Prediction for the next hardware session, falsifiable:
+   `Compressor` and `Gate` are both accepted.
 
 2. **`preset` is lowercase `"default"`.** Every `AddEffect` this client has sent
    carried `"Default"`, capitalised, from the vendor's
