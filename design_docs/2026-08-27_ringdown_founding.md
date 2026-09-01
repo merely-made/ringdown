@@ -649,6 +649,58 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H31 — The wire vocabulary, verified per effect; no firmware chain cap; and
+a counting read-back.** (2026-09-01, ~120 calls against H2-CC340 on slot 8,
+`GetStatus` control after every batch.)
+
+**Validation is per effect, not against one global list.** The control that
+proves it: `Chorus.Gain`, `Reverb.Attack`, `Highpass.DryWet` and
+`Notch.Feedback` — each a key some *other* effect accepts — are all refused.
+So an accepted key below belongs to that effect specifically.
+
+| Effect | Wire keys (accepted) | Knob it names |
+|---|---|---|
+| Chorus | `Frequency`, `DryWet` | FREQ, DRY/WET |
+| Compressor | `Attack`, `Release`, `Threshold`, `Ratio`, `DryGain`, `WetGain` | as labelled |
+| Delay | `DelayTime`, `Sync`, `Lowpass`, `Highpass`, `Feedback`, `DryWet` | TIME, SYNC, LP, HP, FEEDBACK, DRY/WET |
+| Distortion | `Gain`, `Volume`, `Lowpass`, `Highpass` | GAIN, VOL, LP, HP |
+| Equalizer | `GainBand1` … `GainBand7`, `Gain` | the seven sliders (`GainBand8`+ refused) |
+| Gate | `Threshold`, `Range`, `Release`, `Attack` | as labelled |
+| Highpass | `Frequency`, `Q` | FREQ, Q |
+| Lowpass | `Frequency` (+ `Q` by pattern, untested) | FREQ, Q |
+| Notch | `Frequency`, `Q` | FREQ, Q |
+| Phaser | `Frequency`, `Feedback`, `DryWet` | FREQ, FEEDBACK, DRY/WET |
+| Pitch | `Shift` | SHIFT |
+| Reverb | `Decay`, `DryWet` | DECAY, DRY/WET |
+| Tremolo | **none** | its FREQ knob is not writable via `params` |
+
+Refused guesses worth keeping so nobody re-tries them: `Time`, `Bpm`, `Beat`,
+`Division`, `Note`, `NoteValue`, `Subdivision`, `Tempo`, `Slider`, `Beats`,
+`Ratio` for Delay's note-value knob (**still unnamed**; it is the SYNC
+subdivision and greyed unless SYNC is on); `Pitch` for Pitch; and for Tremolo
+`Frequency`, `Rate`, `Speed`, `Slider`, `amp`, `Freq`, `Tremolo`, `DryWet`,
+`Depth`, `Gain`, `Q`, `Volume`, `Shift` — thirteen refusals, so Tremolo's
+validator accepts nothing and its rate presumably lives in the preset alone.
+
+**The firmware does not cap a chain at four.** Six adds then removal at
+index 0: six `true`s and a `false`. Later, after the sweeps, forty-five
+removals: **thirty-four `true`s then `false`** — exactly the number of
+`AddEffect` calls that had answered `true` since the app last reset the slot.
+Two consequences:
+
+- The four-effect limit is the app's editor, not the instrument. A client
+  that ignores it can chain more; whether the DSP has a practical ceiling is
+  a different question and untested.
+- **`RemoveEffect` answers `false` on an empty chain**, which makes
+  remove-until-`false` a *count* of what the chain holds — the first
+  read-back this protocol offers for bank contents, since `ReadBank` never
+  says anything. And 34 for 34 is the first method here whose `true` is
+  demonstrated to mean **stored** rather than merely parsed (contrast H27).
+
+Also settled by the count: every `bypass: true` effect was really in the
+chain, so the owner's "sounds like one, not a wall" verdict on a chain of
+ten is a clean confirmation that `bypass` silences an effect.
+
 **H30 — Every effect's knobs, read off the app's editors.** (2026-09-01, the
 owner's screenshots of all thirteen editor screens at `Preset: default`.)
 

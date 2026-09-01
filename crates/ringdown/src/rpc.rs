@@ -505,6 +505,81 @@ const RECORDING: &[ParamKey] = &[req("free")];
 const SUSTAIN_KILLER: &[ParamKey] = &[req("bank_num"), opt("killed"), opt("reset")];
 const FILE: &[ParamKey] = &[req("name")];
 
+/// Every parameter key the firmware accepts, per effect type.
+///
+/// Established key by key against the instrument on 2026-09-01: each entry
+/// answered `true` to a single-parameter `AddEffect`, and four cross-effect
+/// controls (`Chorus.Gain`, `Reverb.Attack`, ...) answered `false`, so this is
+/// per-effect vocabulary rather than one shared list. Keys match
+/// case-insensitively but are recorded as the app's own words.
+///
+/// `Tremolo` is absent on purpose: thirteen candidate keys were refused, so its
+/// FREQ knob is not writable through `params`. Delay's SYNC note-value knob is
+/// absent because its key is still unknown. See the founding doc, H31.
+pub const PARAMETER_KEYS: &[(&str, &[&str])] = &[
+    ("Chorus", &["Frequency", "DryWet"]),
+    (
+        "Compressor",
+        &[
+            "Attack",
+            "Release",
+            "Threshold",
+            "Ratio",
+            "DryGain",
+            "WetGain",
+        ],
+    ),
+    (
+        "Delay",
+        &[
+            "DelayTime",
+            "Sync",
+            "Lowpass",
+            "Highpass",
+            "Feedback",
+            "DryWet",
+        ],
+    ),
+    ("Distortion", &["Gain", "Volume", "Lowpass", "Highpass"]),
+    (
+        "Equalizer",
+        &[
+            "GainBand1",
+            "GainBand2",
+            "GainBand3",
+            "GainBand4",
+            "GainBand5",
+            "GainBand6",
+            "GainBand7",
+            "Gain",
+        ],
+    ),
+    ("Gate", &["Threshold", "Range", "Release", "Attack"]),
+    ("Highpass", &["Frequency", "Q"]),
+    ("Lowpass", &["Frequency", "Q"]),
+    ("Notch", &["Frequency", "Q"]),
+    ("Phaser", &["Frequency", "Feedback", "DryWet"]),
+    ("Pitch", &["Shift"]),
+    ("Reverb", &["Decay", "DryWet"]),
+];
+
+/// The thirteen effect types the firmware will insert (H28, H29).
+pub const EFFECT_TYPES: [&str; 13] = [
+    "Chorus",
+    "Compressor",
+    "Delay",
+    "Distortion",
+    "Equalizer",
+    "Gate",
+    "Highpass",
+    "Lowpass",
+    "Notch",
+    "Phaser",
+    "Pitch",
+    "Reverb",
+    "Tremolo",
+];
+
 /// One knob of an effect, as the wire carries it.
 ///
 /// Field order is the wire order, and the wire is order-sensitive (H24), so
@@ -1235,6 +1310,26 @@ mod tests {
             pos("bpm") < pos("num") && pos("num") < pos("den"),
             "alphabetized params regressed: {text}"
         );
+    }
+
+    /// The vocabulary table only covers real effect types, and every type but
+    /// Tremolo has an entry -- Tremolo's absence is the finding, not a gap.
+    #[test]
+    fn the_parameter_table_covers_every_effect_that_takes_parameters() {
+        for (kind, keys) in PARAMETER_KEYS {
+            assert!(EFFECT_TYPES.contains(kind), "{kind} is not an effect type");
+            assert!(!keys.is_empty());
+            for (i, a) in keys.iter().enumerate() {
+                assert!(!keys[i + 1..].contains(a), "{kind} lists {a} twice");
+            }
+        }
+        let with_keys: alloc::vec::Vec<&str> = PARAMETER_KEYS.iter().map(|(k, _)| *k).collect();
+        for kind in EFFECT_TYPES {
+            assert!(
+                with_keys.contains(&kind) || kind == "Tremolo",
+                "{kind} has no parameter entry"
+            );
+        }
     }
 
     /// The effect object must serialise in wire order, because the firmware
