@@ -649,6 +649,59 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H26 — Effects reach the audio path. Parameters do not.** (2026-09-01,
+against H2-CC340, confirmed by ear by the instrument's owner.)
+
+`AddEffect` with an **empty** parameter list loads an effect that is audible —
+the owner was playing at the time and heard it arrive, loudly. That is the
+first effect this client has put into the sound, and it retires the earlier
+reading that accepted writes were inert:
+
+> "Accepted is not audible, and that is still open." — H24b
+
+They were audible. The earlier attempts were aimed at a bank that was not the
+one playing, which is a mistake about *where*, not about *whether*.
+
+**A non-empty `params` array is refused**, and the refusal is the firmware's:
+
+| message | transport | result |
+|---|---|---|
+| `params: []` | LLT2 | **true**, and audible |
+| `params: [{"key":"DryWet","value":0.5}]` | LLT2 | false |
+| `params: [{"key":"DryWet","value":0.5}]` | **LLT, plain JSON** | false |
+| `params: []` | LLT, plain JSON | **true** |
+
+The plain-JSON row is the one that matters. LLT runs no compression at all, so
+an identical rejection there clears the codec — which the round-trip test in
+`compress` independently confirms encodes the nested shape exactly.
+
+**And it is structural rather than vocabulary.** Every parameter name the
+keyword dictionary carries was swept singly against `Tremolo` at a mid-range
+value — `DryWet`, `Frequency`, `Decay`, `DelayTime`, `Feedback`, `Gain`, `Q`,
+`Shift`, `Slider`, `Sync`, `Pitch`, `amp` — and all twelve were refused. A
+wrong key would show up as *some* keys working.
+
+**The untried lead is `preset`.** Every `AddEffect` this client has sent
+carried `preset: "Default"`, a name lifted from the vendor app's
+`PresetsActivity.DEFAULT_PRESET_NAME`. But the instrument's own grid is a list
+of *named* presets, and `Effect` carries `preset` and `params` as separate
+fields. The likely division is that `preset` selects a stored
+parameterization and `params` is a live-override channel this firmware does not
+accept. If so, sending a real preset name is how a *particular* sound gets
+loaded, and `params` is not needed for it.
+
+**What this settles for the content plan.** Shareable effect content splits in
+two: "put a Tremolo in this bank" is transmissible today, while "this specific
+tremolo, at these settings" is not — until `preset` is understood or `params`
+is. A practice item can carry an effect; it cannot yet carry a *tone*.
+
+**A physical hazard worth recording.** This instrument is its own speaker: the
+actuator drives the top, the pickup hears the top. A gain-adding effect
+therefore closes a real acoustic feedback loop, which is what the owner heard.
+Gain-shaped effects (`Boost`, `Volume`, `Distortion`) are a different risk
+class from modulation ones and should not be sent to an instrument someone is
+playing without warning them first.
+
 **H25 — `SwitchBank` drives the instrument's preset grid, and the numbering is
 direct.** (2026-08-29, against H2-CC340, with the owner reading the panel.)
 

@@ -876,3 +876,25 @@ mod captured_replies {
         );
     }
 }
+
+#[cfg(test)]
+mod nested_params {
+    /// An effect carrying parameters: an array of objects, nested two deep
+    /// inside the params object, which nothing else in the fixture set has.
+    ///
+    /// The instrument rejects every such message, and this test is half of why
+    /// that is known to be the firmware's doing rather than ours: the codec
+    /// round-trips the shape exactly. The other half is that the same message
+    /// is refused identically over plain-JSON LLT, where no compression runs at
+    /// all. See the founding doc, H26.
+    #[test]
+    fn an_effect_with_parameters_round_trips() {
+        let json = concat!(
+            r#"{"jsonrpc":2.0,"id":2,"method":"AddEffect","params":{"bank_num":0,"#,
+            r#""effect":{"preset":"Default","type":"Tremolo","bypass":false,"#,
+            r#""params":[{"key":"DryWet","value":0.5}]}}}"#
+        );
+        let encoded = super::encode(json).expect("encode must not fail");
+        assert_eq!(super::decode(&encoded).expect("decode"), json);
+    }
+}
