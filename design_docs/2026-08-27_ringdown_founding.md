@@ -649,6 +649,42 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H32 — The vendor app overwrites the instrument's configuration when it
+connects. Ringdown's writes are volatile while the app is in use.** (2026-09-01,
+observed twice by the owner.)
+
+Twice today a state this client had written — a chain of effects in slot 8,
+and later the slot's name, which the owner had read as `ringdown` on the
+panel — was gone after the owner opened the vendor app. The app's own words
+for it: it "cleared the caches and reset the bank to the factory default
+config". It does not read the instrument's state on connect; it pushes the
+profile it holds.
+
+That is consistent with everything else recorded about the app: it never calls
+`ReadBank` or `ReadConfig` (H7, H19), keeps presets in Firebase and local
+storage, and treats the instrument as a sink. So **the app is authoritative
+by construction**, and any write from another client survives exactly until
+the app next connects.
+
+Consequences for any client built on this crate:
+
+- **Writes are not durable against the app.** A user who edits from the
+  desktop and then opens the phone app loses the desktop's changes without
+  warning, and the app will not know they existed. A client should say so —
+  "changes here last until the HyVibe app connects" — rather than imply
+  persistence.
+- **A separate profile does not help**, since the reset re-pushes the whole
+  grid, including the empty slot that had been renamed.
+- **The safe workflow is one client at a time**, and the instrument already
+  enforces one *connection* at a time (H-series, `Session::release`). What it
+  does not enforce is one *authority* at a time, and that is the gap.
+- **Re-sending is cheap.** A client that keeps its own record of what it
+  wrote can re-push after the app has been and gone; the `RemoveEffect`
+  count (H31) tells it whether the chain it expects is still there.
+
+Confirmed by re-sending `SetBankName(8, "ringdown")` after the wipe: `true`,
+and pending the owner's second read of the panel.
+
 **H31 — The wire vocabulary, verified per effect; no firmware chain cap; and
 a counting read-back.** (2026-09-01, ~120 calls against H2-CC340 on slot 8,
 `GetStatus` control after every batch.)
