@@ -25,6 +25,7 @@ use btleplug::platform::{Manager, Peripheral};
 use futures::{Stream, StreamExt};
 use ringdown::{
     handshake::Banner,
+    link::Link,
     llt::{self, Ack, LltCode},
     llt2,
     rpc::{self, Method, RequestIds, Response, Status},
@@ -51,8 +52,21 @@ const CONNECT_BACKOFF: Duration = Duration::from_millis(800);
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     /// The Bluetooth stack itself failed.
+    ///
+    /// Raised by discovery and connection, which are btleplug-specific by
+    /// nature. Once a connection exists, platform I/O failures arrive as
+    /// [`TransportError::Link`] instead, because the protocol driver is
+    /// generic over the transport and cannot name btleplug's error type.
     #[error("bluetooth error: {0}")]
     Bluetooth(#[from] btleplug::Error),
+
+    /// The platform transport failed while carrying the protocol.
+    ///
+    /// Stringified rather than typed: a [`Link`] implementation chooses its own
+    /// error type, and the driver above it must work with all of them. The
+    /// message is the platform's own.
+    #[error("link error: {0}")]
+    Link(String),
 
     /// No Bluetooth adapter is available.
     #[error("no bluetooth adapter found")]
@@ -322,12 +336,57 @@ pub async fn discover(timeout: Duration) -> Result<Vec<Found>, TransportError> {
     Ok(seen)
 }
 
-/// A connected guitar.
-pub struct Guitar {
+/// An open btleplug connection, as the protocol driver sees it.
+///
+/// This is the desktop [`Link`]: everything btleplug-specific about carrying a
+/// message lives here, and nothing above it names btleplug at all.
+pub struct BtleplugLink {
     peripheral: Peripheral,
     request: Characteristic,
     response: Characteristic,
     notifications: std::pin::Pin<Box<dyn Stream<Item = btleplug::api::ValueNotification> + Send>>,
+}
+
+impl Link for BtleplugLink {
+    type Error = btleplug::Error;
+
+    async fn write(&self, bytes: &[u8], with_response: bool) -> Result<(), btleplug::Error> {
+        let kind = if with_response {
+            WriteType::WithResponse
+        } else {
+            WriteType::WithoutResponse
+        };
+        self.peripheral.write(&self.request, bytes, kind).await
+    }
+
+    async fn read_response(&self) -> Result<Vec<u8>, btleplug::Error> {
+        self.peripheral.read(&self.response).await
+    }
+
+    async fn next_notification(&mut self, within: Duration) -> Option<Vec<u8>> {
+        if within.is_zero() {
+            return None;
+        }
+        let note = tokio::time::timeout(within, self.notifications.next())
+            .await
+            .ok()
+            .flatten()?;
+        Some(note.value)
+    }
+
+    async fn disconnect(self) -> Result<(), btleplug::Error> {
+        self.peripheral.disconnect().await
+    }
+}
+
+/// A connected guitar.
+///
+/// Generic over its transport, with the desktop one as the default so existing
+/// callers keep writing `Guitar`. A platform that is not btleplug — CoreBluetooth,
+/// Web Bluetooth, Android — supplies its own [`Link`] and gets this whole driver
+/// unchanged.
+pub struct Guitar<L: Link = BtleplugLink> {
+    link: L,
     ids: RequestIds,
     write_len: usize,
     request_timeout: Duration,
@@ -347,7 +406,7 @@ pub enum Transport {
     Llt2,
 }
 
-impl Guitar {
+impl Guitar<BtleplugLink> {
     /// Connect, set up notifications, and learn the usable write length.
     ///
     /// Follows the connect order the vendor's client uses: discover, subscribe,
@@ -430,12 +489,41 @@ impl Guitar {
             request_timeout: REQUEST_TIMEOUT,
             trace: false,
             transport,
-            peripheral,
-            request,
-            response,
-            notifications,
+            link: BtleplugLink {
+                peripheral,
+                request,
+                response,
+                notifications,
+            },
             ids: RequestIds::new(),
         })
+    }
+}
+
+impl<L: Link> Guitar<L>
+where
+    L::Error: std::fmt::Display,
+{
+    /// Drive an instrument over an already-open transport.
+    ///
+    /// The path for platforms other than desktop btleplug: obtain a connection
+    /// however that platform does it, wrap it in a [`Link`], and the rest of
+    /// the protocol works unchanged. `transport` is which framing generation to
+    /// speak, normally decided from the connect-time banner.
+    pub fn over(link: L, transport: Transport) -> Guitar<L> {
+        let write_len = link.write_len_hint().unwrap_or(ASSUMED_WRITE_LEN);
+        Guitar {
+            link,
+            ids: RequestIds::new(),
+            write_len,
+            request_timeout: REQUEST_TIMEOUT,
+            trace: false,
+            transport,
+        }
+    }
+
+    fn link_err(e: L::Error) -> TransportError {
+        TransportError::Link(e.to_string())
     }
 
     /// The write length in use. See [`ASSUMED_WRITE_LEN`] for why it is
@@ -472,13 +560,10 @@ impl Guitar {
     /// For probing only: it is how an alternative encoding gets tested without
     /// the rest of the stack insisting on the recovered one.
     pub async fn write_raw(&self, bytes: &[u8], with_response: bool) -> Result<(), TransportError> {
-        let kind = if with_response {
-            WriteType::WithResponse
-        } else {
-            WriteType::WithoutResponse
-        };
-        self.peripheral.write(&self.request, bytes, kind).await?;
-        Ok(())
+        self.link
+            .write(bytes, with_response)
+            .await
+            .map_err(Self::link_err)
     }
 
     /// How long to wait for a reply.
@@ -517,7 +602,7 @@ impl Guitar {
     /// This is a GATT *read* of the response characteristic, not a
     /// notification, and it happens before any RPC.
     pub async fn banner(&self) -> Result<Banner, TransportError> {
-        let raw = self.peripheral.read(&self.response).await?;
+        let raw = self.link.read_response().await.map_err(Self::link_err)?;
         let text = String::from_utf8_lossy(&raw).into_owned();
         Banner::parse(&text).ok_or(TransportError::BadBanner(text))
     }
@@ -611,9 +696,7 @@ impl Guitar {
         if self.trace {
             eprintln!("      -> {} bytes", bytes.len());
         }
-        self.peripheral
-            .write(&self.request, bytes, WriteType::WithResponse)
-            .await?;
+        self.link.write(bytes, true).await.map_err(Self::link_err)?;
         Ok(())
     }
 
@@ -774,9 +857,12 @@ impl Guitar {
     }
 
     /// Disconnect cleanly.
-    pub async fn disconnect(&self) -> Result<(), TransportError> {
-        self.peripheral.disconnect().await?;
-        Ok(())
+    ///
+    /// Consuming, because the instrument serves one client at a time: a link
+    /// that has been handed back cannot be used again, and the type system is
+    /// the cheapest place to say so.
+    pub async fn disconnect(self) -> Result<(), TransportError> {
+        self.link.disconnect().await.map_err(Self::link_err)
     }
 
     async fn await_llt_ack(&mut self, object_id: i64, frame: u32) -> Result<Ack, TransportError> {
@@ -866,21 +952,11 @@ impl Guitar {
     /// place so that tracing sees the traffic as it actually arrived.
     async fn next_notification(&mut self, deadline: tokio::time::Instant) -> Option<Vec<u8>> {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        let note = tokio::time::timeout(remaining, self.notifications.next())
-            .await
-            .ok()
-            .flatten()?;
+        let bytes = self.link.next_notification(remaining).await?;
         if self.trace {
-            eprintln!(
-                "      <- {} bytes: {}",
-                note.value.len(),
-                render(&note.value)
-            );
+            eprintln!("      <- {} bytes: {}", bytes.len(), render(&bytes));
         }
-        Some(note.value)
+        Some(bytes)
     }
 }
 

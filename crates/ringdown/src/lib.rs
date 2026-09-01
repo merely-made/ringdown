@@ -49,6 +49,7 @@ extern crate alloc;
 pub mod compress;
 pub mod crc32;
 pub mod handshake;
+pub mod link;
 pub mod llt;
 pub mod llt2;
 pub mod loopfile;

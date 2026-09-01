@@ -692,10 +692,19 @@ while sitting on the panel as a preset is the tell that preset names and effect
 types are different vocabularies. So the dictionary's nineteen is the app's
 superset; eleven is what this firmware will insert.
 
-**Accepted is not audible, and that is still open.** Every accepted add
-returned `true` and produced no sound and no FX indicator. Those writes went to
-bank 0 while the audible bank was elsewhere, so the audibility question was
-never cleanly tested and remains unanswered rather than answered negatively.
+**Accepted is not audible — now tested cleanly, and negative.** After the bank
+model was corrected, the test was run properly twice: `AddEffect` → `true` and
+`SwitchBank` to that same bank → `true`, in both orders (switch-then-add and
+add-then-switch), on two different banks, with the owner listening. No audible
+change, and the instrument's FX indicator never appeared. `SaveConfig` (`true`)
+is not the missing commit step either. **Whatever store `AddEffect` writes,
+the audible chain does not load from it** — the accepted/rejected split of
+H24b is real validation, but validation of a write into a dead end. How the
+phone app gets an effect into the live path remains unrecovered.
+
+Two cautions from how this was learned, recorded because they cost real state:
+
+-
 
 **H23 — PARTIALLY SUPERSEDED by H24: the `ReadMetronome` half stands, the
 "ignores `den`" half was ringdown's own serialization.** (2026-08-28, against
