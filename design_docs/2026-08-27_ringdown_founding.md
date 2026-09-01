@@ -649,6 +649,79 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H28 — The vendor app's own screens, read directly. The data model, the real
+effect catalog, and three of our conclusions overturned.** (2026-09-01, the
+owner walking the app's UI and screenshotting it.)
+
+Everything below is observation of the shipped app, not inference from its
+decompiled code — which matters, because the app fetches its effect and preset
+definitions from Firebase at runtime and that data was never obtainable from
+the APK. The screens are the only source for it.
+
+**The data model, three levels deep:**
+
+```
+Profile        a named set of nine bank slots  ("Factory Standard", "edit1")
+  └ Bank       a named container: { name, gain (dB), sustain killer, chain[] }
+      └ Effect { type, preset, bypass, params[] }   ordered, reorderable
+```
+
+Banks are a **library**, not just the nine on the grid: `12 String`, `Blakes B`,
+`Comp dist`, `Crystals`, `Fantasy`, `Fusion`, `Megaphone`, `Overdrive`,
+`Ping Pong`, `Rev`, `Vintage` and more sit alongside the placed ones, which the
+picker greys out. A profile is an *assignment* of nine library banks to slots.
+
+Every control maps onto a method already in the table, which is the strongest
+confirmation the recovered surface is complete:
+
+| App control | Method |
+|---|---|
+| bank name | `SetBankName(bank_num, name)` |
+| bank **Gain** | `SetGainBank(bank_num, gain)` |
+| **Sustain Killer** toggle + RESET | `SustainKiller(bank_num, killed, reset)` |
+| "Add an effect" | `AddEffect(bank_num, effect)` |
+| swipe-to-delete a chain row | `RemoveEffect(bank_num, effect_num)` |
+| drag handles on chain rows | `MoveEffect(bank_num, effect_num, effect_dest)` |
+| placing a library bank in a slot | `AddBank(bank_num, bank)` |
+| selecting a grid slot | `SwitchBank(bank_num)` |
+
+**Three findings this overturns:**
+
+1. **The effect catalog is not the keyword dictionary.** The app offers
+   **`Compressor`** and **`Gate`**, neither of which appears among the
+   dictionary's nineteen names. H24b's "11 insertable types" was a sweep of the
+   app's *string table*, not the firmware's catalog, and never tested these two.
+   At least thirteen types exist.
+
+2. **`preset` is lowercase `"default"`.** Every `AddEffect` this client has sent
+   carried `"Default"`, capitalised, from the vendor's
+   `PresetsActivity.DEFAULT_PRESET_NAME`. The app displays `default`. On
+   firmware this literal about field order (H24), a capital letter is a
+   candidate cause rather than a detail.
+
+3. **The parameter vocabulary is per-effect and unit-bearing.** Distortion's
+   knobs are **GAIN** (50.0 dB), **VOL** (−25.0 dB), **LP** (1.8 kHz) and
+   **HP** (94 Hz). None of those are the dictionary keys swept in H26
+   (`DryWet`, `Frequency`, `Decay`, …). That sweep refused all twelve because
+   all twelve were from the wrong vocabulary — and it sent `value: 0.5` to
+   fields whose real magnitudes are 50, −25, 1800 and 94.
+
+**And it voids H27's second example.** Bank gain displays as **`Gain -5`** and
+**`Gain 2`** — signed, small integers. That is **decibels**, not a 0–1
+fraction. So `SetGainBank(gain: 0.25)` set a quarter of a decibel: inaudible,
+and invisible on a display showing whole numbers. The write was almost certainly
+applied and the experiment could not have detected it.
+
+H27's rule still holds — `den` outside its whitelist is properly controlled
+evidence — but `SetGainBank` must not be cited for it. **Three separate wrong
+readings were stacked on that one call**: wrong dial, then assumed-discarded,
+then wrong units. Each time the reported conclusion was more confident than the
+evidence supported.
+
+**For the content plan (H26), the unit of tone-sharing is the bank.** Named,
+self-contained, carrying its chain plus gain and sustain settings — exactly what
+"share a tone" means, and `AddBank` is its transport.
+
 **H27 — `true` from this firmware means "parsed", not "applied".** (2026-09-01,
 against H2-CC340, dial read by the owner.)
 

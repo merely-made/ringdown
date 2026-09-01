@@ -539,11 +539,15 @@ pub mod params {
 
     /// A bank, by index.
     ///
-    /// A bank is one of the **nine presets in the instrument's front-panel
-    /// grid**, numbered 0–8 in the order they scroll. `SwitchBank` moves the
-    /// panel selection, hardware-confirmed. There is no scratch bank:
-    /// `bank_num: 0` is the player's first preset, and a write aimed there
-    /// edits something they use.
+    /// A bank is a named container — `{ name, gain, sustain killer, effect
+    /// chain }` — and the instrument holds a whole **library** of them. A
+    /// *profile* assigns nine of those banks to the front-panel grid, and this
+    /// index addresses a **grid slot**, 0–8 in scroll order, not a library
+    /// entry. `SwitchBank` moves the panel selection, hardware-confirmed.
+    ///
+    /// There is no scratch slot: `bank_num: 0` is the player's first preset,
+    /// and a write aimed there edits something they use. The factory profile
+    /// leaves slot 8 empty, which is the closest thing to safe scratch space.
     ///
     /// Note that `ReadBank` answers `""` for every index, populated or not, so
     /// it cannot be used to check whether a bank is empty — or to verify that a
