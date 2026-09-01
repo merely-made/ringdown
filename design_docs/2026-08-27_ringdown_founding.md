@@ -2001,3 +2001,14 @@ is the truth, whatever the APK said.
   and that observation is pending. Typed `Effect`/`Parameter` builders added
   to `rpc` so wire order and the established vocabulary are enforced by the
   compiler rather than remembered.
+- **2026-09-01 — first panel-confirmed write, and a chain cap.** The owner
+  reads slot 8's name on the grid as **`ringdown`** after `SetBankName`: the
+  first `true` in this project verified by the instrument's display rather
+  than by ear. Slot 8 with one live Distortion and nine `bypass: true` ones
+  sounds "much more like one than a wall" — `bypass` is honored, **subject
+  to** the owner's report that a chain holds **at most four effects**, which
+  the app's own bank editor confirms (four rows, then no "Add an effect"). If
+  the firmware also caps at four and silently drops the rest, that is H27
+  again and confounds the bypass reading; test pending on a reset slot. Also:
+  the panel cannot edit an effect's parameters at all — only the app can —
+  which is exactly the surface a desktop client earns (woodshed W3).
