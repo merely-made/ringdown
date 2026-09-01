@@ -649,6 +649,56 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H29 — Effect parameters transmit. H26's "structural" verdict was wrong; it
+was vocabulary all along.** (2026-09-01, against H2-CC340 on the empty slot 8,
+every call read back as `true`/`false`; `GetStatus` control after each batch.)
+
+A Distortion with all four of its knobs set was accepted:
+
+```json
+{"preset":"default","type":"Distortion","bypass":true,
+ "params":[{"key":"Gain","value":50.0},{"key":"Volume","value":-25.0},
+           {"key":"Lowpass","value":1800.0},{"key":"Highpass","value":94.0}]}
+```
+
+**The rules, each established by a pair of writes that differ in one thing:**
+
+- **Keys are the knob's full word, not its label.** The app shows `GAIN`,
+  `VOL`, `LP`, `HP`; the firmware takes `Gain`, `Volume`, `Lowpass`,
+  `Highpass`. `VOL`, `LP`, `HP`, `LPF` and `Cutoff` are all refused. `GAIN`
+  passed only because that label *is* the word.
+- **Keys are case-insensitive.** `GAIN`, `Gain` and `gain` all accepted.
+- **Values are lenient.** `Gain: 0.5` accepted alongside `Gain: 50.0`;
+  `Lowpass: 1800` accepted where the app displays `1.8 kHz`. No unit
+  conversion, no range refusal seen.
+- **One unknown key refuses the whole message.** `Gain` + `VOL` together is
+  `false` although `Gain` alone is `true`. Validation is all-or-nothing.
+- **Partial parameter lists are fine.** A single `Gain` is accepted; the
+  firmware presumably fills the rest from the preset.
+
+So H26's sweep of twelve dictionary names failed because none of them are
+Distortion's parameters — `DryWet`, `Frequency`, `Decay` belong to other
+effects, if to any. "Structural rather than vocabulary" was a wrong inference
+from a sweep whose vocabulary was wrong. H28 supplied the labels; the
+full-word rule was found here by trying `Volume` for `VOL`.
+
+**The catalog prediction held:** `Compressor` and `Gate` both accepted, so
+`AddEffect`'s type oracle is thirteen for thirteen.
+
+**One retraction against myself:** a four-parameter message earlier drew
+silence, which I read as the `ReadConfig` wedge signature. Retested
+identically it returned a clean `false`, and `GetStatus` answered throughout.
+It was a BLE hiccup; the wedge pattern is one message *and* every message
+after it, and this was neither.
+
+**Consequence for the content plan.** H26's line — "a practice item can carry
+an effect but not a tone" — no longer holds. Type, preset and every parameter
+travel in one `AddEffect`. What remains unknown is the parameter vocabulary of
+the other twelve effect types, which the app's editor screens will give by the
+same label-to-word rule, and whether `bypass: true` actually silences an
+effect — slot 8 now carries one live Distortion and several bypassed ones, and
+only the owner's ears can say if that sounds like one or like nine.
+
 **H28 — The vendor app's own screens, read directly. The data model, the real
 effect catalog, and three of our conclusions overturned.** (2026-09-01, the
 owner walking the app's UI and screenshotting it.)
@@ -804,10 +854,11 @@ parameterization and `params` is a live-override channel this firmware does not
 accept. If so, sending a real preset name is how a *particular* sound gets
 loaded, and `params` is not needed for it.
 
-**What this settles for the content plan.** Shareable effect content splits in
+~~**What this settles for the content plan.** Shareable effect content splits in
 two: "put a Tremolo in this bank" is transmissible today, while "this specific
-tremolo, at these settings" is not — until `preset` is understood or `params`
-is. A practice item can carry an effect; it cannot yet carry a *tone*.
+tremolo, at these settings" is not.~~ **Overturned by H29**: parameters
+transmit once the keys are the knobs' full words. "Structural rather than
+vocabulary" above was wrong — the vocabulary swept was simply not Distortion's.
 
 **A physical hazard worth recording.** This instrument is its own speaker: the
 actuator drives the top, the pickup hears the top. A gain-adding effect
