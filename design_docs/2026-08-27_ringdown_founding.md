@@ -649,6 +649,35 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H27 — `true` from this firmware means "parsed", not "applied".** (2026-09-01,
+against H2-CC340, dial read by the owner.)
+
+`SetGainBank` returns `true` and does not move the instrument's **Effects
+volume** dial. Established the only way it can be: the owner set the dial to a
+known 100%, a write of `gain: 0.25` was sent, and the dial stayed at 100%.
+
+An earlier write of `gain: 0.75` had been recorded here as promising. It was
+not — the dial happened to already sit at 75%, so a discarded write and an
+applied one produced identical evidence. **That coincidence was the finding's
+whole basis and it was worthless.** Only a start value deliberately far from
+the target could separate them, which is what the owner's second run supplied.
+
+That makes three separate fields where a `true` reply accompanies no change:
+`den` outside its `{1,2,4,16}` whitelist (H24), `den` dropped from a bundled
+metronome write, and `SetGainBank` here. The generalisation is worth stating as
+a rule for anyone building on this protocol:
+
+> **A `true` result means the request was accepted and parsed. It does not mean
+> the instrument changed.** Confirm every write by reading the value back, and
+> where the change is one a player can perceive, by having them look at the
+> instrument. Where no read-back exists — bank contents, effect parameters,
+> gains — a write is simply unverifiable from software, and should be presented
+> to a user as *sent* rather than as *set*.
+
+What `SetGainBank` does instead is unknown. It may set some other gain with no
+panel readout, or nothing at all; nothing in the protocol distinguishes those,
+which is itself an instance of the rule above.
+
 **H26 — Effects reach the audio path. Parameters do not.** (2026-09-01,
 against H2-CC340, confirmed by ear by the instrument's owner.)
 
