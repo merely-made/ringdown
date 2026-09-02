@@ -733,6 +733,10 @@ pub mod params {
     }
 
     /// Rename a bank.
+    ///
+    /// Takes effect only on a slot that already holds an effect; sent to an
+    /// empty slot the instrument answers `true` and keeps nothing (H33). Add
+    /// the first effect, then name the bank. The panel is the only read-back.
     pub fn bank_name(bank_num: i64, name: &str) -> Value {
         json!({ "bank_num": bank_num, "name": name })
     }

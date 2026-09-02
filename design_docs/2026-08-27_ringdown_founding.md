@@ -649,6 +649,26 @@ Worth noting how it was found: not by testing, but by writing down what each
 method's parameters *are* and comparing that to what the code emits. The
 declaration was the instrument.
 
+**H33 — `SetBankName` takes only on a populated slot; an unnamed populated
+slot shows its neighbour's name.** (2026-09-01, three panel reads by the owner.)
+
+| slot 8 when renamed | reply | panel afterwards |
+|---|---|---|
+| holding effects (first session) | `true` | **ringdown** |
+| empty, after the app's reset — twice | `true` | nothing; stays the `+` tile |
+| holding one effect, unnamed | — | **boost** (tile 8's name) |
+| holding one effect, then renamed | `true` | **ringdown** |
+
+So the rename is honoured only when the slot has a chain, and refused
+silently — `true` — when it does not (H27 again). Between the two, a slot that
+has content but no name renders the name of the slot before it, which is a
+panel fallthrough rather than a Boost chain: the slot held one bypassed
+Tremolo and nothing else.
+
+For a client the order matters: **add the first effect, then name the bank**,
+and treat a rename sent to an empty slot as dropped. The panel is the only
+read-back for the name, since `ReadBank` never reports anything.
+
 **H32 — The vendor app overwrites the instrument's configuration when it
 connects. Ringdown's writes are volatile while the app is in use.** (2026-09-01,
 observed twice by the owner.)
