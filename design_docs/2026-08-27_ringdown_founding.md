@@ -708,15 +708,32 @@ So an accepted key below belongs to that effect specifically.
 | Phaser | `Frequency`, `Feedback`, `DryWet` | FREQ, FEEDBACK, DRY/WET |
 | Pitch | `Shift` | SHIFT |
 | Reverb | `Decay`, `DryWet` | DECAY, DRY/WET |
-| Tremolo | **none** | its FREQ knob is not writable via `params` |
+| Tremolo | `LFO` | FREQ — found on the 23rd candidate; `Frequency` is refused |
 
 Refused guesses worth keeping so nobody re-tries them: `Time`, `Bpm`, `Beat`,
 `Division`, `Note`, `NoteValue`, `Subdivision`, `Tempo`, `Slider`, `Beats`,
 `Ratio` for Delay's note-value knob (**still unnamed**; it is the SYNC
 subdivision and greyed unless SYNC is on); `Pitch` for Pitch; and for Tremolo
 `Frequency`, `Rate`, `Speed`, `Slider`, `amp`, `Freq`, `Tremolo`, `DryWet`,
-`Depth`, `Gain`, `Q`, `Volume`, `Shift` — thirteen refusals, so Tremolo's
-validator accepts nothing and its rate presumably lives in the preset alone.
+`Depth`, `Gain`, `Q`, `Volume`, `Shift`, `Decay`, `DelayTime`, `Feedback`,
+`Sync`, `Pitch`, `GainBand1`, `Period`, `Modulation`, `Wet` — twenty-two
+refusals before **`LFO`** was accepted. It is one of the dictionary's
+"effect type" strings (F15) that never was a type; it is Tremolo's rate.
+
+For Delay's note-value knob, eleven more were refused after the list above:
+`Decay`, `Frequency`, `Gain`, `Q`, `Shift`, `Pitch`, `amp`, `GainBand1`,
+`SyncTime`, `SyncDivision`, `Fraction`, `Duration`, `Length`, `DelayBeat`.
+The owner describes the knob as switching the echo from a fixed time to a
+fraction of the metronome's beat, adjusting with its BPM — so the surviving
+hypothesis is that with `Sync: 1` the note fraction is carried by `DelayTime`
+in beats. The oracle cannot test that, since values are lenient; only ears
+against a running metronome can.
+
+Two batches of ~25 calls each ended in a Windows BLE drop — `HRESULT
+0x80000013, "The object has been closed"`, the same error seen once during the
+calibration probes. `GetStatus` answered on the next connection both times, so
+this is the host stack releasing the handle, not the firmware wedging; a long
+session should expect it and resume.
 
 **The firmware does not cap a chain at four.** Six adds then removal at
 index 0: six `true`s and a `false`. Later, after the sweeps, forty-five

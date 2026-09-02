@@ -513,9 +513,11 @@ const FILE: &[ParamKey] = &[req("name")];
 /// per-effect vocabulary rather than one shared list. Keys match
 /// case-insensitively but are recorded as the app's own words.
 ///
-/// `Tremolo` is absent on purpose: thirteen candidate keys were refused, so its
-/// FREQ knob is not writable through `params`. Delay's SYNC note-value knob is
-/// absent because its key is still unknown. See the founding doc, H31.
+/// Tremolo's single FREQ knob is `LFO` -- twenty-two other names were refused
+/// first, including `Frequency`, which every other FREQ knob uses. Delay's
+/// SYNC note-value knob is absent because its key is still unknown after
+/// twenty-five refusals; the working hypothesis is that with `Sync: 1` the
+/// note fraction travels in `DelayTime`. See the founding doc, H31.
 pub const PARAMETER_KEYS: &[(&str, &[&str])] = &[
     ("Chorus", &["Frequency", "DryWet"]),
     (
@@ -561,6 +563,7 @@ pub const PARAMETER_KEYS: &[(&str, &[&str])] = &[
     ("Phaser", &["Frequency", "Feedback", "DryWet"]),
     ("Pitch", &["Shift"]),
     ("Reverb", &["Decay", "DryWet"]),
+    ("Tremolo", &["LFO"]),
 ];
 
 /// The thirteen effect types the firmware will insert (H28, H29).
@@ -1312,8 +1315,8 @@ mod tests {
         );
     }
 
-    /// The vocabulary table only covers real effect types, and every type but
-    /// Tremolo has an entry -- Tremolo's absence is the finding, not a gap.
+    /// The vocabulary table covers every real effect type exactly once, with
+    /// no key listed twice.
     #[test]
     fn the_parameter_table_covers_every_effect_that_takes_parameters() {
         for (kind, keys) in PARAMETER_KEYS {
@@ -1325,11 +1328,9 @@ mod tests {
         }
         let with_keys: alloc::vec::Vec<&str> = PARAMETER_KEYS.iter().map(|(k, _)| *k).collect();
         for kind in EFFECT_TYPES {
-            assert!(
-                with_keys.contains(&kind) || kind == "Tremolo",
-                "{kind} has no parameter entry"
-            );
+            assert!(with_keys.contains(&kind), "{kind} has no parameter entry");
         }
+        assert_eq!(with_keys.len(), EFFECT_TYPES.len());
     }
 
     /// The effect object must serialise in wire order, because the firmware
