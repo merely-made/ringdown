@@ -669,6 +669,20 @@ For a client the order matters: **add the first effect, then name the bank**,
 and treat a rename sent to an empty slot as dropped. The panel is the only
 read-back for the name, since `ReadBank` never reports anything.
 
+Closed by ear afterwards, with no commands in flight: the renamed slot, holding
+only its one bypassed Tremolo, sounds like nothing at all — so "boost" was the
+label alone and `bypass` holds. The owner's method for that is worth keeping
+as a **repeatable audible oracle**: on this instrument a G played at full
+volume feeds back strongly through Boost or a live Tremolo and not at all
+through an empty or fully-bypassed chain. Feedback onset on one note is a
+binary, sensitive test of whether a chain is live, and a far better one than
+"does it sound different" — which is what earlier bypass tests were reduced to.
+
+One caution the same session produced: a `SwitchBank` sent while the owner is
+comparing tiles by ear voids the comparison, because it moves the selection
+under them. Panel-redraw switches should be sent only when the owner is not
+listening for a difference.
+
 **H32 — The vendor app overwrites the instrument's configuration when it
 connects. Ringdown's writes are volatile while the app is in use.** (2026-09-01,
 observed twice by the owner.)
